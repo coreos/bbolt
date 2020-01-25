@@ -68,4 +68,8 @@ var (
 	// on an existing non-bucket key or when trying to create or delete a
 	// non-bucket key on an existing bucket key.
 	ErrIncompatibleValue = errors.New("incompatible value")
+
+	// ErrUnregisteredSort is returned when trying to create a bucket using an unregistered
+	// sort function or by trying to open a bucket without having its sort function registered
+	ErrUnregisteredSort = errors.New("sort is unregistered")
 )

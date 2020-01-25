@@ -979,6 +979,7 @@ func (db *DB) grow(sz int) error {
 	return nil
 }
 
+// IsReadOnly returns true if the database was opened without write permissions
 func (db *DB) IsReadOnly() bool {
 	return db.readOnly
 }

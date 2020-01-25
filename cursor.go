@@ -1,7 +1,6 @@
 package bbolt
 
 import (
-	"bytes"
 	"fmt"
 	"sort"
 )
@@ -270,7 +269,7 @@ func (c *Cursor) searchNode(key []byte, n *node) {
 	index := sort.Search(len(n.inodes), func(i int) bool {
 		// TODO(benbjohnson): Optimize this range search. It's a bit hacky right now.
 		// sort.Search() finds the lowest index where f() != -1 but we need the highest index.
-		ret := bytes.Compare(n.inodes[i].key, key)
+		ret := sorts[c.bucket.sort](n.inodes[i].key, key)
 		if ret == 0 {
 			exact = true
 		}
@@ -293,7 +292,7 @@ func (c *Cursor) searchPage(key []byte, p *page) {
 	index := sort.Search(int(p.count), func(i int) bool {
 		// TODO(benbjohnson): Optimize this range search. It's a bit hacky right now.
 		// sort.Search() finds the lowest index where f() != -1 but we need the highest index.
-		ret := bytes.Compare(inodes[i].key(), key)
+		ret := sorts[c.bucket.sort](inodes[i].key(), key)
 		if ret == 0 {
 			exact = true
 		}
@@ -316,7 +315,7 @@ func (c *Cursor) nsearch(key []byte) {
 	// If we have a node then search its inodes.
 	if n != nil {
 		index := sort.Search(len(n.inodes), func(i int) bool {
-			return bytes.Compare(n.inodes[i].key, key) != -1
+			return sorts[c.bucket.sort](n.inodes[i].key, key) != -1
 		})
 		e.index = index
 		return
@@ -325,7 +324,7 @@ func (c *Cursor) nsearch(key []byte) {
 	// If we have a page then search its leaf elements.
 	inodes := p.leafPageElements()
 	index := sort.Search(int(p.count), func(i int) bool {
-		return bytes.Compare(inodes[i].key(), key) != -1
+		return sorts[c.bucket.sort](inodes[i].key(), key) != -1
 	})
 	e.index = index
 }

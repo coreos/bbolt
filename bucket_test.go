@@ -144,6 +144,40 @@ func TestBucket_Put(t *testing.T) {
 	}
 }
 
+// Ensure that a bucket can write a key/value using a provided sort.
+func TestBucket_Put_WithSort(t *testing.T) {
+	db := MustOpenDB()
+	defer db.MustClose()
+	reverse := func(a, b []byte) int {
+		switch bytes.Compare(a, b) {
+		case 1:
+			return -1
+		case -1:
+			return 1
+		default:
+			return 0
+		}
+	}
+	bolt.RegisterSort(reverse)
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketWithSort([]byte("widgets"), reverse)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Put([]byte("foo"), []byte("bar")); err != nil {
+			t.Fatal(err)
+		}
+
+		v := tx.Bucket([]byte("widgets")).Get([]byte("foo"))
+		if !bytes.Equal([]byte("bar"), v) {
+			t.Fatalf("unexpected value: %v", v)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Ensure that a bucket can rewrite a key in the same transaction.
 func TestBucket_Put_Repeat(t *testing.T) {
 	db := MustOpenDB()
@@ -1056,6 +1090,74 @@ func TestBucket_ForEach(t *testing.T) {
 	}
 }
 
+// Ensure a user can insert and loop over all key/value pairs in a bucket, honoring the provided sort
+func TestBucket_ForEach_WithSort(t *testing.T) {
+	db := MustOpenDB()
+	defer db.MustClose()
+	reverse := func(a, b []byte) int {
+		switch bytes.Compare(a, b) {
+		case 1:
+			return -1
+		case -1:
+			return 1
+		default:
+			return 0
+		}
+	}
+	bolt.RegisterSort(reverse)
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketWithSort([]byte("widgets"), reverse)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Put([]byte("foo"), []byte("0000")); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Put([]byte("baz"), []byte("0001")); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Put([]byte("bar"), []byte("0002")); err != nil {
+			t.Fatal(err)
+		}
+
+		var index int
+		if err := b.ForEach(func(k, v []byte) error {
+			switch index {
+			case 2:
+				if !bytes.Equal(k, []byte("bar")) {
+					t.Fatalf("unexpected key: %v", k)
+				} else if !bytes.Equal(v, []byte("0002")) {
+					t.Fatalf("unexpected value: %v", v)
+				}
+			case 1:
+				if !bytes.Equal(k, []byte("baz")) {
+					t.Fatalf("unexpected key: %v", k)
+				} else if !bytes.Equal(v, []byte("0001")) {
+					t.Fatalf("unexpected value: %v", v)
+				}
+			case 0:
+				if !bytes.Equal(k, []byte("foo")) {
+					t.Fatalf("unexpected key: %v", k)
+				} else if !bytes.Equal(v, []byte("0000")) {
+					t.Fatalf("unexpected value: %v", v)
+				}
+			}
+			index++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		if index != 3 {
+			t.Fatalf("unexpected index: %d", index)
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Ensure a database can stop iteration early.
 func TestBucket_ForEach_ShortCircuit(t *testing.T) {
 	db := MustOpenDB()
@@ -1524,12 +1626,12 @@ func TestBucket_Stats_Nested(t *testing.T) {
 			t.Fatalf("unexpected BranchInuse: %d", stats.BranchInuse)
 		}
 
-		foo := 16            // foo (pghdr)
+		foo := 24            // foo (pghdr)
 		foo += 101 * 16      // foo leaf elements
 		foo += 100*2 + 100*2 // foo leaf key/values
 		foo += 3 + 16        // foo -> bar key/value
 
-		bar := 16      // bar (pghdr)
+		bar := 24      // bar (pghdr)
 		bar += 11 * 16 // bar leaf elements
 		bar += 10 + 10 // bar leaf key/values
 		bar += 3 + 16  // bar -> baz key/value

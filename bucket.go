@@ -3,6 +3,9 @@ package bbolt
 import (
 	"bytes"
 	"fmt"
+	"hash/fnv"
+	"reflect"
+	"runtime"
 	"unsafe"
 )
 
@@ -24,6 +27,10 @@ const (
 // DefaultFillPercent is the percentage that split pages are filled.
 // This value can be changed by setting Bucket.FillPercent.
 const DefaultFillPercent = 0.5
+
+var sorts = map[uint64]func([]byte, []byte) int{
+	0: bytes.Compare,
+}
 
 // Bucket represents a collection of key/value pairs inside the database.
 type Bucket struct {
@@ -49,6 +56,31 @@ type Bucket struct {
 type bucket struct {
 	root     pgid   // page id of the bucket's root-level page
 	sequence uint64 // monotonically incrementing, used by NextSequence()
+	sort     uint64 // ID of the registered sort function used to order keys
+}
+
+// RegisterSort registers the given sort function. Sort functions msut be registered
+// before creating or opening a bucket that uses it. The default sort used is bytes.Compare.
+// The sort funtion must return 0 if a==b, -1 if a < b, and +1 if a > b.
+func RegisterSort(sort func(a, b []byte) int) error {
+	ID := hashSort(sort)
+	if f, ok := sorts[ID]; ok {
+		return fmt.Errorf("Collision with function %v",
+			runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name())
+	}
+
+	sorts[ID] = sort
+	return nil
+}
+
+func hashSort(sort func(a, b []byte) int) uint64 {
+	name := runtime.FuncForPC(reflect.ValueOf(sort).Pointer()).Name()
+	if name == "bytes.Compare" {
+		return 0
+	}
+	hash := fnv.New64()
+	hash.Write([]byte(name))
+	return hash.Sum64()
 }
 
 // newBucket returns a new bucket associated with a transaction.
@@ -91,7 +123,7 @@ func (b *Bucket) Cursor() *Cursor {
 }
 
 // Bucket retrieves a nested bucket by name.
-// Returns nil if the bucket does not exist.
+// Returns nil if the bucket does not exist or the associated sort function isn't registered.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (b *Bucket) Bucket(name []byte) *Bucket {
 	if b.buckets != nil {
@@ -111,6 +143,10 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 
 	// Otherwise create a bucket and cache it.
 	var child = b.openBucket(v)
+	if child == nil {
+		return nil
+	}
+
 	if b.buckets != nil {
 		b.buckets[string(name)] = child
 	}
@@ -145,6 +181,11 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 		child.page = (*page)(unsafe.Pointer(&value[bucketHeaderSize]))
 	}
 
+	// Return nil if the sort the bucket uses isn't registered
+	if _, ok := sorts[child.sort]; !ok {
+		return nil
+	}
+
 	return &child
 }
 
@@ -152,12 +193,22 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 // Returns an error if the key already exists, if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
 func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
+	return b.CreateBucketWithSort(key, bytes.Compare)
+}
+
+// CreateBucketWithSort creates a new bucket at the given key and sort function and returns the new bucket.
+// Returns an error if the key already exists, if the bucket name is blank, if the sort function is
+// unregistered, or if the bucket name is too long.
+// The bucket instance is only valid for the lifetime of the transaction.
+func (b *Bucket) CreateBucketWithSort(key []byte, sort func(a, b []byte) int) (*Bucket, error) {
 	if b.tx.db == nil {
 		return nil, ErrTxClosed
 	} else if !b.tx.writable {
 		return nil, ErrTxNotWritable
 	} else if len(key) == 0 {
 		return nil, ErrBucketNameRequired
+	} else if _, ok := sorts[hashSort(sort)]; !ok {
+		return nil, ErrUnregisteredSort
 	}
 
 	// Move cursor to correct position.
@@ -174,7 +225,7 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 
 	// Create empty, inline bucket.
 	var bucket = Bucket{
-		bucket:      &bucket{},
+		bucket:      &bucket{sort: hashSort(sort)},
 		rootNode:    &node{isLeaf: true},
 		FillPercent: DefaultFillPercent,
 	}
@@ -392,13 +443,13 @@ func (b *Bucket) ForEach(fn func(k, v []byte) error) error {
 	return nil
 }
 
-// Stat returns stats on a bucket.
+// Stats returns stats on a bucket.
 func (b *Bucket) Stats() BucketStats {
 	var s, subStats BucketStats
 	pageSize := b.tx.db.pageSize
-	s.BucketN += 1
+	s.BucketN++
 	if b.root == 0 {
-		s.InlineBucketN += 1
+		s.InlineBucketN++
 	}
 	b.forEachPage(func(p *page, depth int) {
 		if (p.flags & leafPageFlag) != 0 {
@@ -748,6 +799,7 @@ type BucketStats struct {
 	InlineBucketInuse int // bytes used for inlined buckets (also accounted for in LeafInuse)
 }
 
+// Add will add all of the stats from other to s
 func (s *BucketStats) Add(other BucketStats) {
 	s.BranchPageN += other.BranchPageN
 	s.BranchOverflowN += other.BranchOverflowN

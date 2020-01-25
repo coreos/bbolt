@@ -108,6 +108,14 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	return tx.root.CreateBucket(name)
 }
 
+// CreateBucketWithSort creates a new bucket at the given key and sort function and returns the new bucket.
+// Returns an error if the key already exists, if the bucket name is blank, if the sort function is
+// unregistered, or if the bucket name is too long.
+// The bucket instance is only valid for the lifetime of the transaction.
+func (tx *Tx) CreateBucketWithSort(name []byte, sort func(a, b []byte) int) (*Bucket, error) {
+	return tx.root.CreateBucketWithSort(name, sort)
+}
+
 // CreateBucketIfNotExists creates a new bucket if it doesn't already exist.
 // Returns an error if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.

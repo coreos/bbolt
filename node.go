@@ -79,7 +79,7 @@ func (n *node) childAt(index int) *node {
 
 // childIndex returns the index of a given child node.
 func (n *node) childIndex(child *node) int {
-	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, child.key) != -1 })
+	index := sort.Search(len(n.inodes), func(i int) bool { return sorts[n.bucket.sort](n.inodes[i].key, child.key) != -1 })
 	return index
 }
 
@@ -123,7 +123,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 	}
 
 	// Find insertion index.
-	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })
+	index := sort.Search(len(n.inodes), func(i int) bool { return sorts[n.bucket.sort](n.inodes[i].key, oldKey) != -1 })
 
 	// Add capacity and shift nodes if we don't have an exact match and need to insert.
 	exact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))
@@ -143,7 +143,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 // del removes a key from the node.
 func (n *node) del(key []byte) {
 	// Find index of key.
-	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, key) != -1 })
+	index := sort.Search(len(n.inodes), func(i int) bool { return sorts[n.bucket.sort](n.inodes[i].key, key) != -1 })
 
 	// Exit if the key isn't found.
 	if index >= len(n.inodes) || !bytes.Equal(n.inodes[index].key, key) {
@@ -587,9 +587,11 @@ func (n *node) dump() {
 
 type nodes []*node
 
-func (s nodes) Len() int           { return len(s) }
-func (s nodes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-func (s nodes) Less(i, j int) bool { return bytes.Compare(s[i].inodes[0].key, s[j].inodes[0].key) == -1 }
+func (s nodes) Len() int      { return len(s) }
+func (s nodes) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+func (s nodes) Less(i, j int) bool {
+	return sorts[s[i].bucket.sort](s[i].inodes[0].key, s[j].inodes[0].key) == -1
+}
 
 // inode represents an internal node inside of a node.
 // It can be used to point to elements in a page or point

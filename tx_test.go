@@ -254,6 +254,75 @@ func TestTx_CreateBucket(t *testing.T) {
 	}
 }
 
+// Ensure that a bucket can be created with a provided sort and retrieved.
+func TestTx_CreateBucket_WithSort(t *testing.T) {
+	db := MustOpenDB()
+	defer db.MustClose()
+
+	reverse := func(a, b []byte) int {
+		switch bytes.Compare(a, b) {
+		case 1:
+			return -1
+		case -1:
+			return 1
+		default:
+			return 0
+		}
+	}
+	bolt.RegisterSort(reverse)
+
+	// Create a bucket.
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketWithSort([]byte("widgets"), reverse)
+		if err != nil {
+			t.Fatal(err)
+		} else if b == nil {
+			t.Fatal("expected bucket")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the bucket through a separate transaction.
+	if err := db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("widgets")) == nil {
+			t.Fatal("expected bucket")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Ensure that a bucket can't be created with an unregistered sort.
+func TestTx_CreateBucket_WithSort_Unregistered(t *testing.T) {
+	db := MustOpenDB()
+	defer db.MustClose()
+
+	reverse := func(a, b []byte) int {
+		switch bytes.Compare(a, b) {
+		case 1:
+			return -1
+		case -1:
+			return 1
+		default:
+			return 0
+		}
+	}
+
+	// Create a bucket.
+	if err := db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketWithSort([]byte("widgets"), reverse)
+		if err != bolt.ErrUnregisteredSort {
+			t.Fatal(err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Ensure that a bucket can be created if it doesn't already exist.
 func TestTx_CreateBucketIfNotExists(t *testing.T) {
 	db := MustOpenDB()
