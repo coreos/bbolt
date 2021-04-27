@@ -145,6 +145,7 @@ func testSimulate(t *testing.T, openOption *bolt.Options, round, threadCount, pa
 			}
 		}
 
+		db.MustCheck()
 		db.MustClose()
 		db.MustReopen()
 	}

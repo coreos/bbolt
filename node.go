@@ -581,6 +581,10 @@ func (n *node) dump() {
 }
 */
 
+func compareKeys(left, right []byte) int {
+	return bytes.Compare(left, right)
+}
+
 type nodes []*node
 
 func (s nodes) Len() int      { return len(s) }
