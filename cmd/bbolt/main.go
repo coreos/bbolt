@@ -1163,6 +1163,9 @@ func (cmd *KeysCommand) Run(args ...string) error {
 		return ErrBucketRequired
 	}
 
+	// Optional nested buckets.
+	nested := fs.Args()[2:]
+
 	// Open database.
 	db, err := bolt.Open(path, 0666, nil)
 	if err != nil {
@@ -1177,6 +1180,12 @@ func (cmd *KeysCommand) Run(args ...string) error {
 		if b == nil {
 			return ErrBucketNotFound
 		}
+		for _, bucket := range nested {
+			b = b.Bucket([]byte(bucket))
+			if b == nil {
+				return ErrBucketNotFound
+			}
+		}
 
 		// Iterate over each key.
 		return b.ForEach(func(key, _ []byte) error {
@@ -1189,9 +1198,10 @@ func (cmd *KeysCommand) Run(args ...string) error {
 // Usage returns the help message.
 func (cmd *KeysCommand) Usage() string {
 	return strings.TrimLeft(`
-usage: bolt keys PATH BUCKET
+usage: bolt keys PATH BUCKET...
 
-Print a list of keys in the given bucket.
+Print a list of keys in the given bucket. Keys of nested buckets can be printed
+by giving multiple buckets.
 `, "\n")
 }
 
@@ -1223,17 +1233,22 @@ func (cmd *GetCommand) Run(args ...string) error {
 		return ErrUsage
 	}
 
-	// Require database path, bucket and key.
-	path, bucket, key := fs.Arg(0), fs.Arg(1), fs.Arg(2)
+	// Require database path and bucket.
+	path, bucket := fs.Arg(0), fs.Arg(1)
 	if path == "" {
 		return ErrPathRequired
 	} else if _, err := os.Stat(path); os.IsNotExist(err) {
 		return ErrFileNotFound
 	} else if bucket == "" {
 		return ErrBucketRequired
-	} else if key == "" {
+	}
+
+	// Optional nested buckets and required key.
+	nested := fs.Args()[2:]
+	if len(nested) == 0 {
 		return ErrKeyRequired
 	}
+	nested, key := nested[:len(nested)-1], nested[len(nested)-1]
 
 	// Open database.
 	db, err := bolt.Open(path, 0666, nil)
@@ -1248,6 +1263,12 @@ func (cmd *GetCommand) Run(args ...string) error {
 		b := tx.Bucket([]byte(bucket))
 		if b == nil {
 			return ErrBucketNotFound
+		}
+		for _, bucket := range nested {
+			b = b.Bucket([]byte(bucket))
+			if b == nil {
+				return ErrBucketNotFound
+			}
 		}
 
 		// Find value for given key.
@@ -1264,9 +1285,10 @@ func (cmd *GetCommand) Run(args ...string) error {
 // Usage returns the help message.
 func (cmd *GetCommand) Usage() string {
 	return strings.TrimLeft(`
-usage: bolt get PATH BUCKET KEY
+usage: bolt get PATH BUCKET... KEY
 
-Print the value of the given key in the given bucket.
+Print the value of the given key in the given bucket. Keys from nested buckets
+can be printed by giving multiple buckets.
 `, "\n")
 }
 
