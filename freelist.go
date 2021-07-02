@@ -111,6 +111,10 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 		return 0
 	}
 
+	if n == 0 {
+		return 0
+	}
+
 	var initial, previd pgid
 	for i, id := range f.ids {
 		if id <= 1 {
