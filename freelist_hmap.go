@@ -76,12 +76,21 @@ func (f *freelist) hashmapGetFreePageIDs() []pgid {
 	}
 
 	m := make([]pgid, 0, count)
-	for start, size := range f.forwardMap {
-		for i := 0; i < int(size); i++ {
-			m = append(m, start+pgid(i))
+
+	keys := make([]pgid, 0, len(f.forwardMap))
+	for k := range f.forwardMap {
+		keys = append(keys, k)
+	}
+	sort.Sort(pgids(keys))
+
+	for _, start := range keys {
+		size, ok := f.forwardMap[start]
+		if ok {
+			for i := 0; i < int(size); i++ {
+				m = append(m, start+pgid(i))
+			}
 		}
 	}
-	sort.Sort(pgids(m))
 
 	return m
 }
