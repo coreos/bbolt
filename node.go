@@ -455,51 +455,35 @@ func (n *node) rebalance() {
 
 	_assert(n.parent.numChildren() > 1, "parent must have at least 2 children")
 
-	// Destination node is right sibling if idx == 0, otherwise left sibling.
-	var target *node
+	// Merge with right sibling if idx == 0, otherwise left sibling.
+	var leftNode, rightNode *node
 	var useNextSibling = (n.parent.childIndex(n) == 0)
 	if useNextSibling {
-		target = n.nextSibling()
+		leftNode = n
+		rightNode = n.nextSibling()
 	} else {
-		target = n.prevSibling()
+		leftNode = n.prevSibling()
+		rightNode = n
 	}
 
-	// If both this node and the target node are too small then merge them.
-	if useNextSibling {
-		// Reparent all child nodes being moved.
-		for _, inode := range target.inodes {
-			if child, ok := n.bucket.nodes[inode.pgid]; ok {
-				child.parent.removeChild(child)
-				child.parent = n
-				child.parent.children = append(child.parent.children, child)
-			}
+	// If both nodes are too small then merge them.
+	// Reparent all child nodes being moved.
+	for _, inode := range rightNode.inodes {
+		if child, ok := n.bucket.nodes[inode.pgid]; ok {
+			child.parent.removeChild(child)
+			child.parent = leftNode
+			child.parent.children = append(child.parent.children, child)
 		}
-
-		// Copy over inodes from target and remove target.
-		n.inodes = append(n.inodes, target.inodes...)
-		n.parent.del(target.key)
-		n.parent.removeChild(target)
-		delete(n.bucket.nodes, target.pgid)
-		target.free()
-	} else {
-		// Reparent all child nodes being moved.
-		for _, inode := range n.inodes {
-			if child, ok := n.bucket.nodes[inode.pgid]; ok {
-				child.parent.removeChild(child)
-				child.parent = target
-				child.parent.children = append(child.parent.children, child)
-			}
-		}
-
-		// Copy over inodes to target and remove node.
-		target.inodes = append(target.inodes, n.inodes...)
-		n.parent.del(n.key)
-		n.parent.removeChild(n)
-		delete(n.bucket.nodes, n.pgid)
-		n.free()
 	}
 
-	// Either this node or the target node was deleted from the parent so rebalance it.
+	// Copy over inodes from right node to left node and remove right node.
+	leftNode.inodes = append(leftNode.inodes, rightNode.inodes...)
+	n.parent.del(rightNode.key)
+	n.parent.removeChild(rightNode)
+	delete(n.bucket.nodes, rightNode.pgid)
+	rightNode.free()
+
+	// Either this node or the sibling node was deleted from the parent so rebalance it.
 	n.parent.rebalance()
 }
 
