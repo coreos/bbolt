@@ -191,7 +191,12 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 	// to be treated as a regular, non-inline bucket for the rest of the tx.
 	b.page = nil
 
-	return b.Bucket(key), nil
+	var child = b.openBucket(value)
+	if b.buckets != nil {
+		b.buckets[string(key)] = child
+	}
+
+	return child, nil
 }
 
 // CreateBucketIfNotExists creates a new bucket if it doesn't already exist and returns a reference to it.
