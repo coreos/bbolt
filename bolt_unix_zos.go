@@ -1,4 +1,4 @@
-// +build !windows,!plan9,!solaris,!aix,!zos
+// +build zos
 
 package bbolt
 
@@ -51,7 +51,7 @@ func funlock(db *DB) error {
 // mmap memory maps a DB's data file.
 func mmap(db *DB, sz int) error {
 	// Map the data file to memory.
-	b, err := unix.Mmap(int(db.file.Fd()), 0, sz, syscall.PROT_READ, syscall.MAP_SHARED|db.MmapFlags)
+	b, err := syscall.Mmap(int(db.file.Fd()), 0, sz, syscall.PROT_READ, syscall.MAP_SHARED|db.MmapFlags)
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,7 @@ func munmap(db *DB) error {
 	}
 
 	// Unmap using the original byte slice.
-	err := unix.Munmap(db.dataref)
+	err := syscall.Munmap(db.dataref)
 	db.dataref = nil
 	db.data = nil
 	db.datasz = 0
