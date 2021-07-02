@@ -28,6 +28,7 @@ type freelist struct {
 	freemaps       map[uint64]pidSet           // key is the size of continuous pages(span), value is a set which contains the starting pgids of same size
 	forwardMap     map[pgid]uint64             // key is start pgid, value is its span size
 	backwardMap    map[pgid]uint64             // key is end pgid, value is its span size
+	freePagesCount uint64                      // count of free pages(hashmap version)
 	allocate       func(txid txid, n int) pgid // the freelist allocate func
 	free_count     func() int                  // the function which gives you free page number
 	mergeSpans     func(ids pgids)             // the mergeSpan func

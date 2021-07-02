@@ -40,6 +40,9 @@ const (
 // default page size for db is set to the OS page size.
 var defaultPageSize = os.Getpagesize()
 
+// When enabled, the database will perform assert function to check the slow-path code
+var assertVerify = os.Getenv("BBOLT_VERIFY") == "true"
+
 // The time elapsed between consecutive file locking attempts.
 const flockRetryTimeout = 50 * time.Millisecond
 
@@ -1227,6 +1230,12 @@ func (m *meta) sum64() uint64 {
 // _assert will panic with a given formatted message if the given condition is false.
 func _assert(condition bool, msg string, v ...interface{}) {
 	if !condition {
+		panic(fmt.Sprintf("assertion failed: "+msg, v...))
+	}
+}
+
+func _assertVerify(conditionFunc func() bool, msg string, v ...interface{}) {
+	if assertVerify && !conditionFunc() {
 		panic(fmt.Sprintf("assertion failed: "+msg, v...))
 	}
 }
