@@ -378,6 +378,7 @@ func (b *Bucket) NextSequence() (uint64, error) {
 }
 
 // ForEach executes a function for each key/value pair in a bucket.
+// Because ForEach uses a Cursor, the iteration over keys is in lexicographical order.
 // If the provided function returns an error then the iteration is stopped and
 // the error is returned to the caller. The provided function must not modify
 // the bucket; this will result in undefined behavior.

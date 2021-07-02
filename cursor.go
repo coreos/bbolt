@@ -6,7 +6,8 @@ import (
 	"sort"
 )
 
-// Cursor represents an iterator that can traverse over all key/value pairs in a bucket in sorted order.
+// Cursor represents an iterator that can traverse over all key/value pairs in a bucket
+// in lexicographical order.
 // Cursors see nested buckets with value == nil.
 // Cursors can be obtained from a transaction and are valid as long as the transaction is open.
 //
@@ -110,7 +111,7 @@ func (c *Cursor) Prev() (key []byte, value []byte) {
 	return k, v
 }
 
-// Seek moves the cursor to a given key and returns it.
+// Seek moves the cursor to a given key using a b-tree search and returns it.
 // If the key does not exist then the next key is used. If no keys
 // follow, a nil key is returned.
 // The returned key and value are only valid for the life of the transaction.
