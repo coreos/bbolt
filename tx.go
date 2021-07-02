@@ -273,6 +273,12 @@ func (tx *Tx) rollback() {
 	if tx.db == nil {
 		return
 	}
+	// If the transaction failed due to mmap, rollback is futile.
+	if tx.db.mmapErr != nil {
+		tx.close()
+		return
+	}
+
 	if tx.writable {
 		tx.db.freelist.rollback(tx.meta.txid)
 		if !tx.db.hasSyncedFreelist() {

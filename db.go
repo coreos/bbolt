@@ -132,7 +132,8 @@ type DB struct {
 	dataref  []byte // mmap'ed readonly, write throws SEGV
 	data     *[maxMapSize]byte
 	datasz   int
-	filesz   int // current on disk file size
+	filesz   int   // current on disk file size
+	mmapErr  error // set on mmap failure; subsequently returned by all methods
 	meta0    *meta
 	meta1    *meta
 	pageSize int
@@ -373,7 +374,10 @@ func (db *DB) mmap(minsz int) error {
 
 	// Memory-map the data file as a byte slice.
 	if err := mmap(db, size); err != nil {
-		return err
+		// If mmap fails, we cannot safely continue. Mark the db as unusable,
+		// causing all future calls to return the mmap error.
+		db.mmapErr = MmapError(err.Error())
+		return db.mmapErr
 	}
 
 	if db.Mlock {
@@ -608,6 +612,10 @@ func (db *DB) beginTx() (*Tx, error) {
 		db.metalock.Unlock()
 		return nil, ErrDatabaseNotOpen
 	}
+	// Return mmap error if a previous mmap failed.
+	if db.mmapErr != nil {
+		return nil, db.mmapErr
+	}
 
 	// Create a transaction associated with the database.
 	t := &Tx{}
@@ -648,6 +656,11 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	if !db.opened {
 		db.rwlock.Unlock()
 		return nil, ErrDatabaseNotOpen
+	}
+	// Return mmap error if a previous mmap failed.
+	if db.mmapErr != nil {
+		db.rwlock.Unlock()
+		return nil, db.mmapErr
 	}
 
 	// Create a transaction associated with the database.
