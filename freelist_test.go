@@ -30,30 +30,8 @@ func TestFreelist_free_overflow(t *testing.T) {
 	}
 }
 
-// Ensure that a transaction's free pages can be released.
+// Ensure that release handles boundary conditions correctly
 func TestFreelist_release(t *testing.T) {
-	f := newTestFreelist()
-	f.free(100, &page{id: 12, overflow: 1})
-	f.free(100, &page{id: 9})
-	f.free(102, &page{id: 39})
-	f.release(100)
-	f.release(101)
-	if exp := []pgid{9, 12, 13}; !reflect.DeepEqual(exp, f.getFreePageIDs()) {
-		t.Fatalf("exp=%v; got=%v", exp, f.getFreePageIDs())
-	}
-
-	f.release(102)
-	if exp := []pgid{9, 12, 13, 39}; !reflect.DeepEqual(exp, f.getFreePageIDs()) {
-		t.Fatalf("exp=%v; got=%v", exp, f.getFreePageIDs())
-	}
-}
-
-// Ensure that releaseRange handles boundary conditions correctly
-func TestFreelist_releaseRange(t *testing.T) {
-	type testRange struct {
-		begin, end txid
-	}
-
 	type testPage struct {
 		id       pgid
 		n        int
@@ -61,82 +39,113 @@ func TestFreelist_releaseRange(t *testing.T) {
 		freeTxn  txid
 	}
 
-	var releaseRangeTests = []struct {
-		title         string
-		pagesIn       []testPage
-		releaseRanges []testRange
-		wantFree      []pgid
+	var releaseTests = []struct {
+		title    string
+		pagesIn  []testPage
+		txidSets [][]txid
+		wantFree []pgid
 	}{
 		{
-			title:         "Single pending in range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{1, 300}},
-			wantFree:      []pgid{3},
+			title:    "Single pending #1",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{1}},
+			wantFree: []pgid{3},
 		},
 		{
-			title:         "Single pending with minimum end range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{1, 200}},
-			wantFree:      []pgid{3},
+			title:    "Single pending #2",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{300}},
+			wantFree: []pgid{3},
 		},
 		{
-			title:         "Single pending outsize minimum end range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{1, 199}},
-			wantFree:      nil,
+			title:    "Single pending #3",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{1, 300}},
+			wantFree: []pgid{3},
 		},
 		{
-			title:         "Single pending with minimum begin range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{100, 300}},
-			wantFree:      []pgid{3},
+			title:    "Single pending #4",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{99}},
+			wantFree: []pgid{3},
 		},
 		{
-			title:         "Single pending outside minimum begin range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{101, 300}},
-			wantFree:      nil,
+			title:    "Single pending #5",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{200}},
+			wantFree: []pgid{3},
 		},
 		{
-			title:         "Single pending in minimum range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 199, freeTxn: 200}},
-			releaseRanges: []testRange{{199, 200}},
-			wantFree:      []pgid{3},
+			title:    "Single pending #6",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{200, 99}},
+			wantFree: []pgid{3},
 		},
 		{
-			title:         "Single pending and read transaction at 199",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 199, freeTxn: 200}},
-			releaseRanges: []testRange{{100, 198}, {200, 300}},
-			wantFree:      nil,
+			title:    "Single pending #7",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{100}},
+			wantFree: []pgid{},
 		},
 		{
-			title: "Adjacent pending and read transactions at 199, 200",
+			title:    "Single pending #8",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{199}},
+			wantFree: []pgid{},
+		},
+		{
+			title:    "Single pending #9",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{100, 199}},
+			wantFree: []pgid{},
+		},
+		{
+			title:    "Single pending #10",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{199, 200}},
+			wantFree: []pgid{},
+		},
+		{
+			title:    "Single pending #11",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{{100, 99}},
+			wantFree: []pgid{},
+		},
+		{
+			title:    "Single pending #12",
+			pagesIn:  []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			txidSets: [][]txid{nil},
+			wantFree: []pgid{3},
+		},
+		{
+			title: "Adjacent pending #1",
 			pagesIn: []testPage{
 				{id: 3, n: 1, allocTxn: 199, freeTxn: 200},
 				{id: 4, n: 1, allocTxn: 200, freeTxn: 201},
 			},
-			releaseRanges: []testRange{
-				{100, 198},
-				{200, 199}, // Simulate the ranges db.freePages might produce.
-				{201, 300},
-			},
-			wantFree: nil,
+			txidSets: [][]txid{{100, 198, 200, 199, 201, 300}},
+			wantFree: []pgid{},
 		},
 		{
-			title: "Out of order ranges",
+			title: "Adjacent pending #2",
 			pagesIn: []testPage{
 				{id: 3, n: 1, allocTxn: 199, freeTxn: 200},
 				{id: 4, n: 1, allocTxn: 200, freeTxn: 201},
 			},
-			releaseRanges: []testRange{
-				{201, 199},
-				{201, 200},
-				{200, 200},
-			},
-			wantFree: nil,
+			txidSets: [][]txid{{201, 199, 201, 200, 200, 200}},
+			wantFree: []pgid{},
 		},
 		{
-			title: "Multiple pending, read transaction at 150",
+			title: "Adjacent pending #3",
+			pagesIn: []testPage{
+				{id: 3, n: 1, allocTxn: 199, freeTxn: 200},
+				{id: 4, n: 1, allocTxn: 200, freeTxn: 201},
+			},
+			txidSets: [][]txid{nil},
+			wantFree: []pgid{3, 4},
+		},
+		{
+			title: "Multiple pending #1",
 			pagesIn: []testPage{
 				{id: 3, n: 1, allocTxn: 100, freeTxn: 200},
 				{id: 4, n: 1, allocTxn: 100, freeTxn: 125},
@@ -145,12 +154,31 @@ func TestFreelist_releaseRange(t *testing.T) {
 				{id: 7, n: 2, allocTxn: 150, freeTxn: 175},
 				{id: 9, n: 2, allocTxn: 175, freeTxn: 200},
 			},
-			releaseRanges: []testRange{{50, 149}, {151, 300}},
-			wantFree:      []pgid{4, 9, 10},
+			txidSets: [][]txid{
+				{125, 151, 199},
+				{50, 149, 151, 300},
+			},
+			wantFree: []pgid{4, 9, 10},
+		},
+		{
+			title: "Multiple pending #2",
+			pagesIn: []testPage{
+				{id: 3, n: 1, allocTxn: 100, freeTxn: 200},
+				{id: 4, n: 1, allocTxn: 100, freeTxn: 250},
+				{id: 5, n: 1, allocTxn: 125, freeTxn: 200},
+				{id: 6, n: 1, allocTxn: 125, freeTxn: 250},
+				{id: 7, n: 2, allocTxn: 150, freeTxn: 200},
+				{id: 9, n: 2, allocTxn: 175, freeTxn: 250},
+			},
+			txidSets: [][]txid{
+				{110, 240},
+				{249},
+			},
+			wantFree: []pgid{3, 5, 7, 8},
 		},
 	}
 
-	for _, c := range releaseRangeTests {
+	for _, c := range releaseTests {
 		f := newTestFreelist()
 		var ids []pgid
 		for _, p := range c.pagesIn {
@@ -167,8 +195,8 @@ func TestFreelist_releaseRange(t *testing.T) {
 			f.free(p.freeTxn, &page{id: p.id, overflow: uint32(p.n - 1)})
 		}
 
-		for _, r := range c.releaseRanges {
-			f.releaseRange(r.begin, r.end)
+		for _, txids := range c.txidSets {
+			f.release(txids)
 		}
 
 		if exp := c.wantFree; !reflect.DeepEqual(exp, f.getFreePageIDs()) {
@@ -315,7 +343,7 @@ func benchmark_FreelistRelease(b *testing.B, size int) {
 		f := newTestFreelist()
 		f.pending = map[txid]*txPending{1: txp}
 		f.readIDs(ids)
-		f.release(1)
+		f.release([]txid{1})
 	}
 }
 

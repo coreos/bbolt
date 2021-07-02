@@ -9,9 +9,27 @@ import (
 // txPending holds a list of pgids and corresponding allocation txns
 // that are pending to be freed.
 type txPending struct {
-	ids              []pgid
-	alloctx          []txid // txids allocating the ids
-	lastReleaseBegin txid   // beginning txid of last matching releaseRange
+	ids     []pgid
+	alloctx []txid // txids allocating the ids
+	sorted  bool   // if the ids and alloctx are already sorted
+}
+
+// sort sorts the ids and alloctx by txid.
+func (txp *txPending) sort() {
+	if txp.sorted {
+		return
+	}
+	sort.Sort((*sortTxPending)(txp))
+	txp.sorted = true
+}
+
+type sortTxPending txPending
+
+func (s *sortTxPending) Len() int           { return len(s.ids) }
+func (s *sortTxPending) Less(i, j int) bool { return s.alloctx[i] < s.alloctx[j] }
+func (s *sortTxPending) Swap(i, j int) {
+	s.ids[i], s.ids[j] = s.ids[j], s.ids[i]
+	s.alloctx[i], s.alloctx[j] = s.alloctx[j], s.alloctx[i]
 }
 
 // pidSet holds the set of starting pgids which have the same span size
@@ -181,51 +199,52 @@ func (f *freelist) free(txid txid, p *page) {
 	}
 }
 
-// release moves all page ids for a transaction id (or older) to the freelist.
-func (f *freelist) release(txid txid) {
+// release moves all pending pages unseen by the read-only transactions to
+// the free list.
+func (f *freelist) release(txids []txid) {
+	// Pre-sort the txids for the binary search by firstPageUnseenByTxs.
+	sort.Slice(txids, func(i, j int) bool { return txids[i] < txids[j] })
+
 	m := make(pgids, 0)
-	for tid, txp := range f.pending {
-		if tid <= txid {
-			// Move transaction's pending pages to the available freelist.
-			// Don't remove from the cache since the page is still free.
-			m = append(m, txp.ids...)
-			delete(f.pending, tid)
+	for freeTxid, txp := range f.pending {
+		// Pre-sort the txp for the binary search by firstPageUnseenByTxs.
+		txp.sort()
+		allocTxids := txp.alloctx
+		i := firstPageUnseenByTxs(allocTxids, freeTxid, txids)
+
+		// The pages unseen by any transaction is safe to release, move to the available freelist.
+		// Don't remove from the cache since the page is still free.
+		m = append(m, txp.ids[i:]...)
+		if i == 0 {
+			delete(f.pending, freeTxid)
+			continue
 		}
+
+		// The pages maybe seen by transactions, remain pending.
+		txp.ids = txp.ids[:i]
+		txp.alloctx = txp.alloctx[:i]
 	}
 	f.mergeSpans(m)
 }
 
-// releaseRange moves pending pages allocated within an extent [begin,end] to the free list.
-func (f *freelist) releaseRange(begin, end txid) {
-	if begin > end {
-		return
+// firstPageUnseenByTxs returns the index of the first page, which is
+// allocated at the allocTxid and freed at the freeTxid, and can not be
+// seen by any read-only transaction.
+func firstPageUnseenByTxs(allocTxids []txid, freeTxid txid, txids []txid) int {
+	// Consider that if allocTxid <= txid < freeTxid, the page can be
+	// seen by the read-only transaction.
+
+	// Find the latest transaction started before pages have been freed at the freeTxid.
+	j := -1 + sort.Search(len(txids), func(i int) bool { return txids[i] >= freeTxid })
+	if j < 0 {
+		// No transaction can see pages freed at the freeTxid.
+		return 0
 	}
-	var m pgids
-	for tid, txp := range f.pending {
-		if tid < begin || tid > end {
-			continue
-		}
-		// Don't recompute freed pages if ranges haven't updated.
-		if txp.lastReleaseBegin == begin {
-			continue
-		}
-		for i := 0; i < len(txp.ids); i++ {
-			if atx := txp.alloctx[i]; atx < begin || atx > end {
-				continue
-			}
-			m = append(m, txp.ids[i])
-			txp.ids[i] = txp.ids[len(txp.ids)-1]
-			txp.ids = txp.ids[:len(txp.ids)-1]
-			txp.alloctx[i] = txp.alloctx[len(txp.alloctx)-1]
-			txp.alloctx = txp.alloctx[:len(txp.alloctx)-1]
-			i--
-		}
-		txp.lastReleaseBegin = begin
-		if len(txp.ids) == 0 {
-			delete(f.pending, tid)
-		}
-	}
-	f.mergeSpans(m)
+
+	// Find the first page allocated after the latest transaction has been started.
+	txid := txids[j]
+	k := sort.Search(len(allocTxids), func(i int) bool { return allocTxids[i] > txid })
+	return k
 }
 
 // rollback removes the pages from a given pending tx.

@@ -704,12 +704,11 @@ func TestTx_Rollback(t *testing.T) {
 	}
 }
 
-// TestTx_releaseRange ensures db.freePages handles page releases
+// TestTx_release ensures db.releasePages handles page releases
 // correctly when there are transaction that are no longer reachable
 // via any read/write transactions and are "between" ongoing read
-// transactions, which requires they must be freed by
-// freelist.releaseRange.
-func TestTx_releaseRange(t *testing.T) {
+// transactions, which requires they must be released by freelist.release.
+func TestTx_release(t *testing.T) {
 	// Set initial mmap size well beyond the limit we will hit in this
 	// test, since we are testing with long running read transactions
 	// and will deadlock if db.grow is triggered.
@@ -789,9 +788,9 @@ func TestTx_releaseRange(t *testing.T) {
 	rollback(hold4)
 	rollback(hold5)
 
-	// Execute a write transaction to trigger a releaseRange operation in the db
-	// that will free multiple ranges between the remaining open read transactions, now that the
-	// holds have been rolled back.
+	// Execute a write transaction to trigger a release operation in the db
+	// that will release pending pages both allocated and freed between the
+	// remaining open read transactions, now that the holds have been rolled back.
 	put("k4", "v4")
 
 	// Check that all long running reads still read correct values.
