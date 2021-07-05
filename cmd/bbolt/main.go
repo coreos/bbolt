@@ -1298,7 +1298,7 @@ func (cmd *BenchCommand) Run(args ...string) error {
 
 	// Remove path if "-work" is not set. Otherwise keep path.
 	if options.Work {
-		fmt.Fprintf(cmd.Stdout, "work: %s\n", options.Path)
+		fmt.Fprintf(cmd.Stderr, "work: %s\n", options.Path)
 	} else {
 		defer os.Remove(options.Path)
 	}
@@ -1312,19 +1312,22 @@ func (cmd *BenchCommand) Run(args ...string) error {
 	defer db.Close()
 
 	// Write to the database.
-	var results BenchResults
-	if err := cmd.runWrites(db, options, &results); err != nil {
+	writeResults := BenchResults{int64(0), 0}
+	fmt.Fprintf(cmd.Stderr, "starting write benchmark.\n")
+	if err := cmd.runWrites(db, options, &writeResults); err != nil {
 		return fmt.Errorf("write: %v", err)
 	}
 
+	readResults := BenchResults{int64(0), 0}
+	fmt.Fprintf(cmd.Stderr, "starting read benchmark.\n")
 	// Read from the database.
-	if err := cmd.runReads(db, options, &results); err != nil {
+	if err := cmd.runReads(db, options, &readResults); err != nil {
 		return fmt.Errorf("bench: read: %s", err)
 	}
 
 	// Print results.
-	fmt.Fprintf(os.Stderr, "# Write\t%v\t(%v/op)\t(%v op/sec)\n", results.WriteDuration, results.WriteOpDuration(), results.WriteOpsPerSecond())
-	fmt.Fprintf(os.Stderr, "# Read\t%v\t(%v/op)\t(%v op/sec)\n", results.ReadDuration, results.ReadOpDuration(), results.ReadOpsPerSecond())
+	fmt.Fprintf(os.Stderr, "# Write\t%v(ops)\t%v\t(%v/op)\t(%v op/sec)\n", writeResults.CompletedOps, writeResults.Duration, writeResults.OpDuration(), writeResults.OpsPerSecond())
+	fmt.Fprintf(os.Stderr, "# Read\t%v(ops)\t%v\t(%v/op)\t(%v op/sec)\n", readResults.CompletedOps, readResults.Duration, readResults.OpDuration(), readResults.OpsPerSecond())
 	fmt.Fprintln(os.Stderr, "")
 	return nil
 }
@@ -1338,8 +1341,8 @@ func (cmd *BenchCommand) ParseFlags(args []string) (*BenchOptions, error) {
 	fs.StringVar(&options.ProfileMode, "profile-mode", "rw", "")
 	fs.StringVar(&options.WriteMode, "write-mode", "seq", "")
 	fs.StringVar(&options.ReadMode, "read-mode", "seq", "")
-	fs.IntVar(&options.Iterations, "count", 1000, "")
-	fs.IntVar(&options.BatchSize, "batch-size", 0, "")
+	fs.Int64Var(&options.Iterations, "count", 1000, "")
+	fs.Int64Var(&options.BatchSize, "batch-size", 0, "")
 	fs.IntVar(&options.KeySize, "key-size", 8, "")
 	fs.IntVar(&options.ValueSize, "value-size", 32, "")
 	fs.StringVar(&options.CPUProfile, "cpuprofile", "", "")
@@ -1383,6 +1386,10 @@ func (cmd *BenchCommand) runWrites(db *bolt.DB, options *BenchOptions, results *
 		cmd.startProfiling(options)
 	}
 
+	finishChan := make(chan interface{})
+	go cmd.checkProgress(results, finishChan)
+	defer close(finishChan)
+
 	t := time.Now()
 
 	var err error
@@ -1400,7 +1407,7 @@ func (cmd *BenchCommand) runWrites(db *bolt.DB, options *BenchOptions, results *
 	}
 
 	// Save time to write.
-	results.WriteDuration = time.Since(t)
+	results.Duration = time.Since(t)
 
 	// Stop profiling for writes only.
 	if options.ProfileMode == "w" {
@@ -1431,14 +1438,13 @@ func (cmd *BenchCommand) runWritesRandomNested(db *bolt.DB, options *BenchOption
 }
 
 func (cmd *BenchCommand) runWritesWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) error {
-	results.WriteOps = options.Iterations
 
-	for i := 0; i < options.Iterations; i += options.BatchSize {
+	for i := int64(0); i < options.Iterations; i += options.BatchSize {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			b, _ := tx.CreateBucketIfNotExists(benchBucketName)
 			b.FillPercent = options.FillPercent
 
-			for j := 0; j < options.BatchSize; j++ {
+			for j := int64(0); j < options.BatchSize; j++ {
 				key := make([]byte, options.KeySize)
 				value := make([]byte, options.ValueSize)
 
@@ -1454,15 +1460,16 @@ func (cmd *BenchCommand) runWritesWithSource(db *bolt.DB, options *BenchOptions,
 			return nil
 		}); err != nil {
 			return err
+		} else {
+			results.CompletedOps += options.BatchSize
 		}
 	}
 	return nil
 }
 
 func (cmd *BenchCommand) runWritesNestedWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) error {
-	results.WriteOps = options.Iterations
 
-	for i := 0; i < options.Iterations; i += options.BatchSize {
+	for i := int64(0); i < options.Iterations; i += options.BatchSize {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			top, err := tx.CreateBucketIfNotExists(benchBucketName)
 			if err != nil {
@@ -1481,7 +1488,7 @@ func (cmd *BenchCommand) runWritesNestedWithSource(db *bolt.DB, options *BenchOp
 			}
 			b.FillPercent = options.FillPercent
 
-			for j := 0; j < options.BatchSize; j++ {
+			for j := int64(0); j < options.BatchSize; j++ {
 				var key = make([]byte, options.KeySize)
 				var value = make([]byte, options.ValueSize)
 
@@ -1497,6 +1504,8 @@ func (cmd *BenchCommand) runWritesNestedWithSource(db *bolt.DB, options *BenchOp
 			return nil
 		}); err != nil {
 			return err
+		} else {
+			results.CompletedOps += options.BatchSize
 		}
 	}
 	return nil
@@ -1508,6 +1517,10 @@ func (cmd *BenchCommand) runReads(db *bolt.DB, options *BenchOptions, results *B
 	if options.ProfileMode == "r" {
 		cmd.startProfiling(options)
 	}
+
+	finishChan := make(chan interface{})
+	go cmd.checkProgress(results, finishChan)
+	defer close(finishChan)
 
 	t := time.Now()
 
@@ -1525,7 +1538,7 @@ func (cmd *BenchCommand) runReads(db *bolt.DB, options *BenchOptions, results *B
 	}
 
 	// Save read time.
-	results.ReadDuration = time.Since(t)
+	results.Duration = time.Since(t)
 
 	// Stop profiling for reads.
 	if options.ProfileMode == "rw" || options.ProfileMode == "r" {
@@ -1540,21 +1553,18 @@ func (cmd *BenchCommand) runReadsSequential(db *bolt.DB, options *BenchOptions, 
 		t := time.Now()
 
 		for {
-			var count int
 
 			c := tx.Bucket(benchBucketName).Cursor()
 			for k, v := c.First(); k != nil; k, v = c.Next() {
 				if v == nil {
 					return errors.New("invalid value")
 				}
-				count++
+				results.CompletedOps++
 			}
 
-			if options.WriteMode == "seq" && count != options.Iterations {
-				return fmt.Errorf("read seq: iter mismatch: expected %d, got %d", options.Iterations, count)
+			if options.WriteMode == "seq" && results.CompletedOps != options.Iterations {
+				return fmt.Errorf("read seq: iter mismatch: expected %d, got %d", options.Iterations, results.CompletedOps)
 			}
-
-			results.ReadOps += count
 
 			// Make sure we do this for at least a second.
 			if time.Since(t) >= time.Second {
@@ -1571,7 +1581,6 @@ func (cmd *BenchCommand) runReadsSequentialNested(db *bolt.DB, options *BenchOpt
 		t := time.Now()
 
 		for {
-			var count int
 			var top = tx.Bucket(benchBucketName)
 			if err := top.ForEach(func(name, _ []byte) error {
 				if b := top.Bucket(name); b != nil {
@@ -1580,7 +1589,7 @@ func (cmd *BenchCommand) runReadsSequentialNested(db *bolt.DB, options *BenchOpt
 						if v == nil {
 							return ErrInvalidValue
 						}
-						count++
+						results.CompletedOps++
 					}
 				}
 				return nil
@@ -1588,11 +1597,9 @@ func (cmd *BenchCommand) runReadsSequentialNested(db *bolt.DB, options *BenchOpt
 				return err
 			}
 
-			if options.WriteMode == "seq-nest" && count != options.Iterations {
-				return fmt.Errorf("read seq-nest: iter mismatch: expected %d, got %d", options.Iterations, count)
+			if options.WriteMode == "seq-nest" && results.CompletedOps != options.Iterations {
+				return fmt.Errorf("read seq-nest: iter mismatch: expected %d, got %d", options.Iterations, results.CompletedOps)
 			}
-
-			results.ReadOps += count
 
 			// Make sure we do this for at least a second.
 			if time.Since(t) >= time.Second {
@@ -1602,6 +1609,23 @@ func (cmd *BenchCommand) runReadsSequentialNested(db *bolt.DB, options *BenchOpt
 
 		return nil
 	})
+}
+
+func (cmd *BenchCommand) checkProgress(results *BenchResults, finishChan chan interface{}) {
+	ticker := time.Tick(time.Second)
+	lastCompleted, lastTime := int64(0), time.Now()
+	for {
+		select {
+		case <-finishChan:
+			return
+		case t := <-ticker:
+			completed, taken := results.CompletedOps, t.Sub(lastTime)
+			fmt.Fprintf(cmd.Stderr, "Completed %d requests, %d/s \n",
+				completed, ((completed-lastCompleted)*int64(time.Second))/int64(taken),
+			)
+			lastCompleted, lastTime = completed, t
+		}
+	}
 }
 
 // File handlers for the various profiles.
@@ -1669,8 +1693,8 @@ type BenchOptions struct {
 	ProfileMode   string
 	WriteMode     string
 	ReadMode      string
-	Iterations    int
-	BatchSize     int
+	Iterations    int64
+	BatchSize     int64
 	KeySize       int
 	ValueSize     int
 	CPUProfile    string
@@ -1685,40 +1709,21 @@ type BenchOptions struct {
 
 // BenchResults represents the performance results of the benchmark.
 type BenchResults struct {
-	WriteOps      int
-	WriteDuration time.Duration
-	ReadOps       int
-	ReadDuration  time.Duration
+	CompletedOps		int64
+	Duration 			time.Duration
 }
 
-// Returns the duration for a single write operation.
-func (r *BenchResults) WriteOpDuration() time.Duration {
-	if r.WriteOps == 0 {
+// Returns the duration for a single read/write operation.
+func (r *BenchResults) OpDuration() time.Duration {
+	if r.CompletedOps == 0 {
 		return 0
 	}
-	return r.WriteDuration / time.Duration(r.WriteOps)
+	return r.Duration / time.Duration(r.CompletedOps)
 }
 
-// Returns average number of write operations that can be performed per second.
-func (r *BenchResults) WriteOpsPerSecond() int {
-	var op = r.WriteOpDuration()
-	if op == 0 {
-		return 0
-	}
-	return int(time.Second) / int(op)
-}
-
-// Returns the duration for a single read operation.
-func (r *BenchResults) ReadOpDuration() time.Duration {
-	if r.ReadOps == 0 {
-		return 0
-	}
-	return r.ReadDuration / time.Duration(r.ReadOps)
-}
-
-// Returns average number of read operations that can be performed per second.
-func (r *BenchResults) ReadOpsPerSecond() int {
-	var op = r.ReadOpDuration()
+// Returns average number of read/write operations that can be performed per second.
+func (r *BenchResults) OpsPerSecond() int {
+	var op = r.OpDuration()
 	if op == 0 {
 		return 0
 	}
