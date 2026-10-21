@@ -330,16 +330,21 @@ func (b *Bucket) DeleteBucket(key []byte) (err error) {
 		return errors.ErrIncompatibleValue
 	}
 
-	// Recursively delete all child buckets.
+	// Recursively delete all child buckets. Collect the keys first, since
+	// deleting while iterating an in-memory node makes the cursor skip entries.
 	child := b.Bucket(newKey)
+	var childKeys [][]byte
 	err = child.ForEachBucket(func(k []byte) error {
-		if err := child.DeleteBucket(k); err != nil {
-			return fmt.Errorf("delete bucket: %s", err)
-		}
+		childKeys = append(childKeys, cloneBytes(k))
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	for _, k := range childKeys {
+		if err := child.DeleteBucket(k); err != nil {
+			return fmt.Errorf("delete bucket: %s", err)
+		}
 	}
 
 	// Remove cached copy.
