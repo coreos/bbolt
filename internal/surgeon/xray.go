@@ -56,13 +56,20 @@ func (n XRay) traverse(stack []common.Pgid, visited map[common.Pgid]struct{}, ca
 		for i := uint16(0); i < p.Count(); i++ {
 			lpe := p.LeafPageElement(i)
 			if lpe.IsBucketEntry() {
-				pgid := lpe.Bucket().RootPage()
-				if pgid > 0 {
-					if err := n.traverse(append(stack, pgid), visited, callback); err != nil {
+				bkt := lpe.Bucket()
+				if bkt == nil {
+					return fmt.Errorf("leaf page %d element %d: bucket header too short", pgid, i)
+				}
+				child := bkt.RootPage()
+				if child > 0 {
+					if err := n.traverse(append(stack, child), visited, callback); err != nil {
 						return err
 					}
 				} else {
-					inlinePage := lpe.Bucket().InlinePage(lpe.Value())
+					inlinePage := bkt.InlinePage(lpe.Value())
+					if inlinePage == nil {
+						return fmt.Errorf("leaf page %d element %d: inline page too short", pgid, i)
+					}
 					if err := callback(inlinePage, stack); err != nil {
 						return fmt.Errorf("failed callback for inline page  (stack %v): %w", stack, err)
 					}

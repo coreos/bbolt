@@ -45,8 +45,28 @@ func (b *InBucket) IncSequence() {
 	b.sequence++
 }
 
+// InlinePage returns the inline page stored after the bucket header.
+// A short buffer returns nil. An unaligned address is copied into an
+// 8-byte-aligned backing store before the cast. make([]byte) is only aligned
+// for byte, so the copy is allocated as []uint64.
+// The aligned fast path still aliases the caller's bytes.
 func (b *InBucket) InlinePage(v []byte) *Page {
+	if len(v) < BucketHeaderSize+int(PageHeaderSize) {
+		return nil
+	}
+	pageBytes := v[BucketHeaderSize:]
+	if uintptr(unsafe.Pointer(&pageBytes[0]))%unsafe.Alignof(Page{}) != 0 {
+		return pageFromAlignedCopy(pageBytes)
+	}
 	return (*Page)(unsafe.Pointer(&v[BucketHeaderSize]))
+}
+
+func pageFromAlignedCopy(src []byte) *Page {
+	n := (len(src) + 7) / 8
+	words := make([]uint64, n)
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(&words[0])), n*8)
+	copy(dst, src)
+	return (*Page)(unsafe.Pointer(&words[0]))
 }
 
 func (b *InBucket) String() string {
