@@ -3,6 +3,7 @@ package bbolt_test
 import (
 	"fmt"
 	"math/rand"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,9 @@ import (
 )
 
 func TestTx_Check_CorruptPage(t *testing.T) {
+	if runtime.GOOS == "js" {
+		t.Skip("corrupts the file behind the DB; the js mapping is a copy refreshed only on commit")
+	}
 	bucketName := []byte("data")
 
 	t.Log("Creating db file.")

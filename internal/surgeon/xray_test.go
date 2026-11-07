@@ -40,7 +40,9 @@ func TestFindPathsToKey(t *testing.T) {
 // error instead of recursing until stack overflow. See issue #701 for the
 // real-world corruption pattern (power-off creating a page cycle).
 func TestFindPathsToKey_CycleDetected(t *testing.T) {
-	db := btesting.MustCreateDB(t)
+	// A fixed page size keeps the tree two levels deep on hosts with larger
+	// pages, such as js/wasm (64 KiB).
+	db := btesting.MustCreateDBWithOption(t, &bbolt.Options{PageSize: 4096})
 	require.NoError(t,
 		db.Fill([]byte("data"), 1, 500,
 			func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
