@@ -325,6 +325,13 @@ func (tx *Tx) rollback() {
 		return
 	}
 	if tx.writable {
+		// The meta page may have reached the file before the error. The
+		// transaction's changes are then visible, and the pages it freed
+		// must stay pending until no open read transaction can see them.
+		if tx.db.data != nil && tx.db.meta().Txid() == tx.meta.Txid() {
+			tx.close()
+			return
+		}
 		tx.db.freelist.Rollback(tx.meta.Txid())
 		// When mmap fails, the `data`, `dataref` and `datasz` may be reset to
 		// zero values, and there is no way to reload free page IDs in this case.
