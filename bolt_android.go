@@ -8,8 +8,27 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"go.etcd.io/bbolt/errors"
 	"go.etcd.io/bbolt/internal/common"
 )
+
+// Android is an ordinary Linux system, except on the FUSE mount that backs
+// emulated external storage (/storage/emulated/...): MediaProvider's FUSE
+// daemon advertises FUSE_CAP_FLOCK_LOCKS but leaves the flock handler
+// unimplemented, so libfuse answers the request with ENOSYS and the kernel
+// forwards that to userspace rather than falling back to local locking.
+// flock(2) fails with ENOSYS there, while databases in the app's own data
+// directory are unaffected.
+// See https://github.com/etcd-io/bbolt/issues/558.
+//
+// Open file description locks work on that mount and carry the same ownership
+// semantics as flock(2): the lock belongs to the open file description, so a
+// second Open of the same file conflicts even from within one process, and
+// closing another descriptor to the file leaves the lock in place.
+//
+// F_OFD_SETLK requires Linux 3.15, which this path always has: it is only
+// reached on the FUSE mount, introduced in Android 11 with a 4.14 or newer
+// kernel.
 
 // flock acquires an advisory lock on a file descriptor.
 func flock(db *DB, exclusive bool, timeout time.Duration) error {
@@ -18,25 +37,18 @@ func flock(db *DB, exclusive bool, timeout time.Duration) error {
 		t = time.Now()
 	}
 	fd := db.file.Fd()
-	var lockType int16
-	if exclusive {
-		lockType = syscall.F_WRLCK
-	} else {
-		lockType = syscall.F_RDLCK
-	}
 	for {
 		// Attempt to obtain an exclusive lock.
-		lock := syscall.Flock_t{Type: lockType}
-		err := syscall.FcntlFlock(fd, syscall.F_SETLK, &lock)
+		err := lockFile(fd, exclusive)
 		if err == nil {
 			return nil
-		} else if err != syscall.EAGAIN {
+		} else if !isLockHeldByOther(err) {
 			return err
 		}
 
 		// If we timed out then return an error.
 		if timeout != 0 && time.Since(t) > timeout-flockRetryTimeout {
-			return ErrTimeout
+			return errors.ErrTimeout
 		}
 
 		// Wait for a bit and try again.
@@ -46,12 +58,48 @@ func flock(db *DB, exclusive bool, timeout time.Duration) error {
 
 // funlock releases an advisory lock on a file descriptor.
 func funlock(db *DB) error {
-	var lock syscall.Flock_t
-	lock.Start = 0
-	lock.Len = 0
-	lock.Type = syscall.F_UNLCK
-	lock.Whence = 0
-	return syscall.FcntlFlock(uintptr(db.file.Fd()), syscall.F_SETLK, &lock)
+	fd := db.file.Fd()
+	err := syscall.Flock(int(fd), syscall.LOCK_UN)
+	if err != syscall.ENOSYS {
+		return err
+	}
+	return ofdSetlk(fd, unix.F_UNLCK)
+}
+
+// lockFile takes a non-blocking lock on the whole file, using flock(2) where
+// the filesystem implements it and an open file description lock elsewhere.
+func lockFile(fd uintptr, exclusive bool) error {
+	how := syscall.LOCK_SH
+	lockType := int16(unix.F_RDLCK)
+	if exclusive {
+		how = syscall.LOCK_EX
+		lockType = unix.F_WRLCK
+	}
+
+	err := syscall.Flock(int(fd), how|syscall.LOCK_NB)
+	if err != syscall.ENOSYS {
+		return err
+	}
+	return ofdSetlk(fd, lockType)
+}
+
+// ofdSetlk applies lockType to the whole file as an open file description lock.
+func ofdSetlk(fd uintptr, lockType int16) error {
+	lock := unix.Flock_t{
+		Type:   lockType,
+		Whence: 0, // SEEK_SET
+		Start:  0,
+		Len:    0, // to the end of the file
+	}
+	return unix.FcntlFlock(fd, unix.F_OFD_SETLK, &lock)
+}
+
+// isLockHeldByOther reports whether err means the lock is currently held
+// elsewhere, so the attempt is worth retrying. flock(2) reports this as
+// EWOULDBLOCK, which is EAGAIN on Linux; fcntl(2) may use either EAGAIN or
+// EACCES.
+func isLockHeldByOther(err error) bool {
+	return err == syscall.EAGAIN || err == syscall.EACCES
 }
 
 // mmap memory maps a DB's data file.

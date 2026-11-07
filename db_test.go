@@ -67,6 +67,31 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+// Ensure that a second Open of a database file that is already open in this
+// process times out. bbolt's file lock is owned by the open file description,
+// so it excludes other handles within a process just as it excludes other
+// processes. See https://github.com/etcd-io/bbolt/issues/558.
+func TestOpen_ErrTimeout_SameProcess(t *testing.T) {
+	switch runtime.GOOS {
+	case "aix", "solaris":
+		// These platforms lock with POSIX record locks, which are owned by
+		// the process.
+		t.Skip("file locks on this platform are process-owned")
+	}
+
+	path := tempfile()
+	defer os.RemoveAll(path)
+
+	db, err := bolt.Open(path, 0600, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, db.Close())
+	}()
+
+	_, err = bolt.Open(path, 0600, &bolt.Options{Timeout: 100 * time.Millisecond})
+	require.ErrorIs(t, err, berrors.ErrTimeout)
+}
+
 // Regression validation for https://github.com/etcd-io/bbolt/pull/122.
 // Tests multiple goroutines simultaneously opening a database.
 func TestOpen_MultipleGoroutines(t *testing.T) {
