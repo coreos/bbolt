@@ -714,6 +714,43 @@ func TestBucket_DeleteBucket_Nested2(t *testing.T) {
 	}
 }
 
+// Deleting a bucket modified earlier in the same transaction must free every child bucket.
+func TestBucket_DeleteBucket_ModifiedWithMultipleChildBuckets(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+
+	if err := db.Update(func(tx *bolt.Tx) error {
+		widgets, err := tx.CreateBucket([]byte("widgets"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, name := range []string{"foo", "bar"} {
+			child, err := widgets.CreateBucket([]byte(name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := child.CreateBucket([]byte("baz")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Update(func(tx *bolt.Tx) error {
+		widgets := tx.Bucket([]byte("widgets"))
+		if err := widgets.Put([]byte("key"), []byte("value")); err != nil {
+			t.Fatal(err)
+		}
+		return tx.DeleteBucket([]byte("widgets"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	db.MustCheck()
+}
+
 // Ensure that deleting a child bucket with multiple pages causes all pages to get collected.
 // NOTE: Consistency check in bolt_test.DB.Close() will panic if pages not freed properly.
 func TestBucket_DeleteBucket_Large(t *testing.T) {
