@@ -182,7 +182,7 @@ func (c *Cursor) goToFirstElementOnTheStack() {
 			pgId = ref.page.BranchPageElement(uint16(ref.index)).Pgid()
 		}
 		p, n := c.bucket.pageNode(pgId)
-		c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
+		c.push(elemRef{page: p, node: n, index: 0})
 	}
 }
 
@@ -206,7 +206,7 @@ func (c *Cursor) last() {
 
 		var nextRef = elemRef{page: p, node: n}
 		nextRef.index = nextRef.count() - 1
-		c.stack = append(c.stack, nextRef)
+		c.push(nextRef)
 	}
 }
 
@@ -286,7 +286,7 @@ func (c *Cursor) search(key []byte, pgId common.Pgid) {
 		panic(fmt.Sprintf("invalid page type: %d: %x", p.Id(), p.Flags()))
 	}
 	e := elemRef{page: p, node: n}
-	c.stack = append(c.stack, e)
+	c.push(e)
 
 	// If we're on a leaf page/node then find the specific node.
 	if e.isLeaf() {
@@ -429,4 +429,17 @@ func (r *elemRef) count() int {
 		return len(r.node.inodes)
 	}
 	return int(r.page.Count())
+}
+
+// maxCursorDepth bounds a descent. Every branch has at least two children, so
+// a real tree cannot be deeper than the 64 bits of a page id allow.
+const maxCursorDepth = 64
+
+// push adds a level to the stack. A deeper stack means a corrupt branch page
+// leads back up its own path, and the descent would grow the stack forever.
+func (c *Cursor) push(ref elemRef) {
+	if len(c.stack) >= maxCursorDepth {
+		panic(fmt.Sprintf("bbolt: cursor deeper than %d pages, a branch page cycles back on its path", maxCursorDepth))
+	}
+	c.stack = append(c.stack, ref)
 }
