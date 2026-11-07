@@ -441,6 +441,9 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	if err != nil {
 		return n, fmt.Errorf("meta 0 copy: %s", err)
 	}
+	if nn != len(buf) {
+		return n, fmt.Errorf("meta 0 copy: %w", io.ErrShortWrite)
+	}
 
 	// Write meta 1 with a lower transaction id.
 	page.SetId(1)
@@ -450,6 +453,9 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	n += int64(nn)
 	if err != nil {
 		return n, fmt.Errorf("meta 1 copy: %s", err)
+	}
+	if nn != len(buf) {
+		return n, fmt.Errorf("meta 1 copy: %w", io.ErrShortWrite)
 	}
 
 	// Copy data pages using a SectionReader to avoid affecting f's offset.
