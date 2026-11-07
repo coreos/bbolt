@@ -1040,5 +1040,6 @@ Below is a list of public, open source projects that use Bolt:
 * [tentacool](https://github.com/optiflows/tentacool) - REST api server to manage system stuff (IP, DNS, Gateway...) on a linux server.
 * [torrent](https://github.com/anacrolix/torrent) - Full-featured BitTorrent client package and utilities in Go. BoltDB is a storage backend in development.
 * [Wiki](https://github.com/peterhellberg/wiki) - A tiny wiki using Goji, BoltDB and Blackfriday.
+* [bboltwui](https://github.com/pin2t/bboltwui) - A simple web UI for bbolt database
 
 If you are using Bolt in a project please send a pull request to add it to the list.
