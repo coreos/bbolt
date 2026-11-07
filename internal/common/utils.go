@@ -1,14 +1,28 @@
 package common
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"unsafe"
 )
 
+// LoadBucket decodes an on-disk bucket header by copy.
+// The value of a leaf element starts at pos+ksize and is not 8-byte aligned
+// when the key length is odd. Casting &buf[0] to *InBucket is rejected by
+// checkptr and is SIGBUS on architectures that fault unaligned 64-bit loads.
+// A short buffer returns nil. Callers must nil-check. The returned pointer is
+// not a writable view of the page.
 func LoadBucket(buf []byte) *InBucket {
-	return (*InBucket)(unsafe.Pointer(&buf[0]))
+	if len(buf) < BucketHeaderSize {
+		return nil
+	}
+	b := NewInBucket(
+		Pgid(binary.NativeEndian.Uint64(buf[0:8])),
+		binary.NativeEndian.Uint64(buf[8:16]),
+	)
+	return &b
 }
 
 func LoadPage(buf []byte) *Page {
