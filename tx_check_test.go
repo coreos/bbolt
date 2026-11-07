@@ -213,3 +213,67 @@ func mustGetBucketRootPage(t testing.TB, db *bbolt.DB, bucketName []byte) common
 
 	return rootPageId
 }
+
+func TestTx_Check_CorruptBranchPageReferenceCycle(t *testing.T) {
+	bucketName := []byte("data")
+	db := btesting.MustCreateDBWithOption(t, &bbolt.Options{PageSize: 4096})
+	require.NoError(t, db.Fill(bucketName, 1, 100,
+		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return make([]byte, 100) },
+	))
+
+	rootPageId := mustGetBucketRootPage(t, db.DB, bucketName)
+	rootPage, rootPageBuf, err := guts_cli.ReadPage(db.Path(), uint64(rootPageId))
+	require.NoError(t, err)
+	require.True(t, rootPage.IsBranchPage())
+	require.NotZero(t, rootPage.Count())
+
+	rootPage.BranchPageElement(0).SetPgid(rootPageId)
+	require.NoError(t, guts_cli.WritePage(db.Path(), rootPageBuf))
+
+	require.NoError(t, db.View(func(tx *bbolt.Tx) error {
+		var checkErrors []error
+		for checkErr := range tx.Check(bbolt.WithPageId(uint64(rootPageId))) {
+			checkErrors = append(checkErrors, checkErr)
+		}
+		require.NotEmpty(t, checkErrors)
+		require.ErrorContains(t, checkErrors[0], fmt.Sprintf("page %d: multiple references", rootPageId))
+		return nil
+	}))
+
+	// The database was intentionally corrupted, so skip the cleanup check.
+	db.MustClose()
+}
+
+func TestTx_Check_CorruptBranchPageReferenceHighWaterMark(t *testing.T) {
+	bucketName := []byte("data")
+	db := btesting.MustCreateDBWithOption(t, &bbolt.Options{PageSize: 4096})
+	require.NoError(t, db.Fill(bucketName, 1, 100,
+		func(tx int, k int) []byte { return []byte(fmt.Sprintf("%04d", k)) },
+		func(tx int, k int) []byte { return make([]byte, 100) },
+	))
+
+	rootPageId := mustGetBucketRootPage(t, db.DB, bucketName)
+	rootPage, rootPageBuf, err := guts_cli.ReadPage(db.Path(), uint64(rootPageId))
+	require.NoError(t, err)
+	require.True(t, rootPage.IsBranchPage())
+	require.NotZero(t, rootPage.Count())
+
+	_, hwm, err := guts_cli.ReadPageAndHWMSize(db.Path())
+	require.NoError(t, err)
+	rootPage.BranchPageElement(0).SetPgid(hwm)
+	require.NoError(t, guts_cli.WritePage(db.Path(), rootPageBuf))
+
+	require.NoError(t, db.View(func(tx *bbolt.Tx) error {
+		var checkErrors []error
+		for checkErr := range tx.Check(bbolt.WithPageId(uint64(rootPageId))) {
+			checkErrors = append(checkErrors, checkErr)
+		}
+		require.NotEmpty(t, checkErrors)
+		require.ErrorContains(t, checkErrors[0], fmt.Sprintf("page %d: out of bounds", hwm))
+		return nil
+	}))
+
+	// The database was intentionally corrupted, so skip the cleanup check.
+	db.MustClose()
+}

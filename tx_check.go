@@ -90,7 +90,9 @@ func (tx *Tx) check(cfg checkConfig, ch chan error) {
 
 func (tx *Tx) recursivelyCheckPage(pageId common.Pgid, reachable map[common.Pgid]*common.Page, freed map[common.Pgid]bool,
 	kvStringer KVStringer, ch chan error) {
-	tx.checkInvariantProperties(pageId, reachable, freed, kvStringer, ch)
+	if !tx.checkInvariantProperties(pageId, reachable, freed, kvStringer, ch) {
+		return
+	}
 	tx.recursivelyCheckBucketInPage(pageId, reachable, freed, kvStringer, ch)
 }
 
@@ -132,7 +134,9 @@ func (tx *Tx) recursivelyCheckBucket(b *Bucket, reachable map[common.Pgid]*commo
 		return
 	}
 
-	tx.checkInvariantProperties(b.RootPage(), reachable, freed, kvStringer, ch)
+	if !tx.checkInvariantProperties(b.RootPage(), reachable, freed, kvStringer, ch) {
+		return
+	}
 
 	// Check each bucket within this bucket.
 	_ = b.ForEachBucket(func(k []byte) error {
@@ -144,24 +148,68 @@ func (tx *Tx) recursivelyCheckBucket(b *Bucket, reachable map[common.Pgid]*commo
 }
 
 func (tx *Tx) checkInvariantProperties(pageId common.Pgid, reachable map[common.Pgid]*common.Page, freed map[common.Pgid]bool,
-	kvStringer KVStringer, ch chan error) {
-	tx.forEachPage(pageId, func(p *common.Page, _ int, stack []common.Pgid) {
-		verifyPageReachable(p, tx.meta.Pgid(), stack, reachable, freed, ch)
-	})
-
-	tx.recursivelyCheckPageKeyOrder(pageId, kvStringer.KeyToString, ch)
-}
-
-func verifyPageReachable(p *common.Page, hwm common.Pgid, stack []common.Pgid, reachable map[common.Pgid]*common.Page, freed map[common.Pgid]bool, ch chan error) {
-	if p.Id() > hwm {
-		ch <- fmt.Errorf("page %d: out of bounds: %d (stack: %v)", int(p.Id()), int(hwm), stack)
+	kvStringer KVStringer, ch chan error) bool {
+	if !tx.recursivelyCheckPageReachability(pageId, nil, reachable, freed, ch) {
+		return false
 	}
 
-	// Ensure each page is only referenced once.
+	tx.recursivelyCheckPageKeyOrder(pageId, kvStringer.KeyToString, ch)
+	return true
+}
+
+// recursivelyCheckPageReachability walks a page tree while rejecting references
+// that cannot be followed safely. In particular, it stops at repeated page IDs
+// so corrupt branch cycles do not make Tx.Check recurse forever.
+func (tx *Tx) recursivelyCheckPageReachability(pageId common.Pgid, stack []common.Pgid,
+	reachable map[common.Pgid]*common.Page, freed map[common.Pgid]bool, ch chan error) bool {
+	stack = append(stack, pageId)
+	hwm := tx.meta.Pgid()
+	if pageId >= hwm {
+		ch <- fmt.Errorf("page %d: out of bounds: %d (stack: %v)", pageId, hwm, stack)
+		return false
+	}
+
+	// Check the requested ID before dereferencing it. This also serves as the
+	// traversal's visited check because every successfully loaded page is added
+	// to reachable below.
+	if _, ok := reachable[pageId]; ok {
+		ch <- fmt.Errorf("page %d: multiple references (stack: %v)", pageId, stack)
+		return false
+	}
+
+	p := tx.page(pageId)
+	valid := verifyPageReachable(p, hwm, stack, reachable, freed, ch)
+	if !valid || !p.IsBranchPage() {
+		return valid
+	}
+
+	for i := range p.BranchPageElements() {
+		elem := p.BranchPageElement(uint16(i))
+		if !tx.recursivelyCheckPageReachability(elem.Pgid(), stack, reachable, freed, ch) {
+			valid = false
+		}
+	}
+	return valid
+}
+
+func verifyPageReachable(p *common.Page, hwm common.Pgid, stack []common.Pgid, reachable map[common.Pgid]*common.Page,
+	freed map[common.Pgid]bool, ch chan error) bool {
+	// An overflow page occupies the inclusive range [id, id+overflow]. Validate
+	// that range before recording it so corrupt overflow counts cannot wrap or
+	// extend beyond the transaction's high-water mark.
+	lastPageId := p.Id() + common.Pgid(p.Overflow())
+	if lastPageId < p.Id() || lastPageId >= hwm {
+		ch <- fmt.Errorf("page %d: out of bounds: %d (stack: %v)", lastPageId, hwm, stack)
+		return false
+	}
+
+	valid := true
+	// Ensure each page, including overflow pages, is only referenced once.
 	for i := common.Pgid(0); i <= common.Pgid(p.Overflow()); i++ {
 		var id = p.Id() + i
 		if _, ok := reachable[id]; ok {
 			ch <- fmt.Errorf("page %d: multiple references (stack: %v)", int(id), stack)
+			valid = false
 		}
 		reachable[id] = p
 	}
@@ -169,9 +217,12 @@ func verifyPageReachable(p *common.Page, hwm common.Pgid, stack []common.Pgid, r
 	// We should only encounter un-freed leaf and branch pages.
 	if freed[p.Id()] {
 		ch <- fmt.Errorf("page %d: reachable freed", int(p.Id()))
+		valid = false
 	} else if !p.IsBranchPage() && !p.IsLeafPage() {
 		ch <- fmt.Errorf("page %d: invalid type: %s (stack: %v)", int(p.Id()), p.Typ(), stack)
+		valid = false
 	}
+	return valid
 }
 
 // recursivelyCheckPageKeyOrder verifies database consistency with respect to b-tree
