@@ -484,8 +484,24 @@ func sameFile(f1, f2 *os.File) (bool, error) {
 // A reader transaction is maintained during the copy so it is safe to continue
 // using the database while a copy is in progress.
 func (tx *Tx) CopyFile(path string, mode os.FileMode) error {
-	f, err := tx.db.openFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
+	// Open without O_TRUNC: path may resolve to the live database via a
+	// symlink, hard link, or an alternative spelling of db.Path().
+	f, err := tx.db.openFile(path, os.O_RDWR|os.O_CREATE, mode)
 	if err != nil {
+		return err
+	}
+
+	// Compare open file identities, not path strings, before changing data.
+	// Truncating the source database here would corrupt an active database.
+	if same, err := sameFile(tx.db.file, f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("check database copy destination: %w", err)
+	} else if same {
+		_ = f.Close()
+		return fmt.Errorf("cannot copy database over its own file: %q", path)
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
 		return err
 	}
 
