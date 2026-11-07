@@ -1167,6 +1167,141 @@ func TestBucket_ForEach_Closed(t *testing.T) {
 	}
 }
 
+// Ensure that All yields every key/value pair in order, with nil values for
+// nested buckets, both before and after commit.
+func TestBucket_All(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+
+	type kv struct{ k, v []byte }
+	expected := []kv{
+		{[]byte("bar"), []byte("0002")},
+		{[]byte("baz"), []byte("0001")},
+		{[]byte("csubbucket"), nil},
+		{[]byte("foo"), []byte("0000")},
+	}
+
+	verifyReads := func(b *bolt.Bucket) {
+		var items []kv
+		for k, v := range b.All() {
+			items = append(items, kv{k, v})
+		}
+		assert.Equal(t, expected, items, "what we iterated (All) is not what we put")
+	}
+
+	err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("widgets"))
+		require.NoError(t, err)
+		require.NoError(t, b.Put([]byte("foo"), []byte("0000")))
+		require.NoError(t, b.Put([]byte("baz"), []byte("0001")))
+		require.NoError(t, b.Put([]byte("bar"), []byte("0002")))
+		_, err = b.CreateBucket([]byte("csubbucket"))
+		require.NoError(t, err)
+
+		verifyReads(b)
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("widgets"))
+		require.NotNil(t, b)
+		verifyReads(b)
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// Ensure that iterating an empty bucket yields nothing.
+func TestBucket_Iterators_Empty(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+
+	err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("widgets"))
+		require.NoError(t, err)
+
+		for k, v := range b.All() {
+			t.Fatalf("unexpected item from All: %q=%q", k, v)
+		}
+		for k := range b.Buckets() {
+			t.Fatalf("unexpected item from Buckets: %q", k)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// Ensure that breaking out of a range loop stops the iteration.
+func TestBucket_Iterators_Break(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+
+	err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("widgets"))
+		require.NoError(t, err)
+		for _, k := range []string{"a", "b", "c", "d"} {
+			_, err := b.CreateBucket([]byte(k))
+			require.NoError(t, err)
+		}
+
+		var index int
+		for k := range b.All() {
+			if bytes.Equal(k, []byte("b")) {
+				break
+			}
+			index++
+		}
+		assert.Equal(t, 1, index, "All")
+
+		index = 0
+		for range b.Buckets() {
+			break
+		}
+		assert.Equal(t, 0, index, "Buckets")
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// Ensure that Buckets yields only nested buckets, and that in a writable
+// transaction the yielded bucket is the same instance as Bucket returns, so
+// that writes through it are committed.
+func TestBucket_Buckets(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+
+	err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("widgets"))
+		require.NoError(t, err)
+		require.NoError(t, b.Put([]byte("foo"), []byte("0000")))
+		_, err = b.CreateBucket([]byte("zsubbucket"))
+		require.NoError(t, err)
+		require.NoError(t, b.Put([]byte("bar"), []byte("0001")))
+		_, err = b.CreateBucket([]byte("csubbucket"))
+		require.NoError(t, err)
+
+		var names [][]byte
+		for name, child := range b.Buckets() {
+			names = append(names, name)
+			require.NotNil(t, child)
+			assert.Same(t, b.Bucket(name), child)
+			require.NoError(t, child.Put([]byte("owner"), name))
+		}
+		assert.Equal(t, [][]byte{[]byte("csubbucket"), []byte("zsubbucket")}, names)
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("widgets"))
+		var names [][]byte
+		for name, child := range b.Buckets() {
+			names = append(names, name)
+			assert.Equal(t, name, child.Get([]byte("owner")))
+		}
+		assert.Equal(t, [][]byte{[]byte("csubbucket"), []byte("zsubbucket")}, names)
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 // Ensure that an error is returned when inserting with an empty key.
 func TestBucket_Put_EmptyKey(t *testing.T) {
 	db := btesting.MustCreateDB(t)
@@ -2019,6 +2154,56 @@ func BenchmarkBucket_CreateBucketIfNotExists(b *testing.B) {
 	}
 }
 
+func benchmarkBucketIteration(b *testing.B, iterate func(*bolt.Bucket) int) {
+	db := btesting.MustCreateDB(b)
+	const keyN = 10000
+	err := db.Update(func(tx *bolt.Tx) error {
+		bkt, err := tx.CreateBucket([]byte("bench"))
+		if err != nil {
+			return err
+		}
+		for i := 0; i < keyN; i++ {
+			if err := bkt.Put([]byte(fmt.Sprintf("%08d", i)), []byte("value")); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := db.View(func(tx *bolt.Tx) error {
+			if n := iterate(tx.Bucket([]byte("bench"))); n != keyN {
+				b.Fatalf("unexpected count: %d", n)
+			}
+			return nil
+		})
+		require.NoError(b, err)
+	}
+}
+
+func BenchmarkBucket_ForEach(b *testing.B) {
+	benchmarkBucketIteration(b, func(bkt *bolt.Bucket) int {
+		var n int
+		_ = bkt.ForEach(func(k, v []byte) error {
+			n++
+			return nil
+		})
+		return n
+	})
+}
+
+func BenchmarkBucket_All(b *testing.B) {
+	benchmarkBucketIteration(b, func(bkt *bolt.Bucket) int {
+		var n int
+		for range bkt.All() {
+			n++
+		}
+		return n
+	})
+}
+
 func ExampleBucket_Put() {
 	// Open the database.
 	db, err := bolt.Open(tempfile(), 0600, nil)
@@ -2167,4 +2352,98 @@ func ExampleBucket_ForEach() {
 	// A cat is lame.
 	// A dog is fun.
 	// A liger is awesome.
+}
+
+func ExampleBucket_All() {
+	// Open the database.
+	db, err := bolt.Open(tempfile(), 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(db.Path())
+
+	// Insert data into a bucket.
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("animals"))
+		if err != nil {
+			return err
+		}
+
+		if err := b.Put([]byte("dog"), []byte("fun")); err != nil {
+			return err
+		}
+		if err := b.Put([]byte("cat"), []byte("lame")); err != nil {
+			return err
+		}
+		if err := b.Put([]byte("liger"), []byte("awesome")); err != nil {
+			return err
+		}
+
+		// Iterate over items in sorted key order, stopping early.
+		for k, v := range b.All() {
+			if bytes.Equal(k, []byte("liger")) {
+				break
+			}
+			fmt.Printf("A %s is %s.\n", k, v)
+		}
+
+		return nil
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Close database to release file lock.
+	if err := db.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Output:
+	// A cat is lame.
+	// A dog is fun.
+}
+
+func ExampleBucket_Buckets() {
+	// Open the database.
+	db, err := bolt.Open(tempfile(), 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(db.Path())
+
+	if err := db.Update(func(tx *bolt.Tx) error {
+		zoo, err := tx.CreateBucket([]byte("zoo"))
+		if err != nil {
+			return err
+		}
+		if err := zoo.Put([]byte("name"), []byte("City Zoo")); err != nil {
+			return err
+		}
+		for _, name := range []string{"reptiles", "birds"} {
+			if _, err := zoo.CreateBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		return zoo.Bucket([]byte("birds")).Put([]byte("parrot"), []byte("loud"))
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := db.View(func(tx *bolt.Tx) error {
+		// Iterate over nested buckets only; the "name" key is skipped.
+		for name, b := range tx.Bucket([]byte("zoo")).Buckets() {
+			fmt.Printf("%s has %d keys\n", name, b.Stats().KeyN)
+		}
+		return nil
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Close database to release file lock.
+	if err := db.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Output:
+	// birds has 1 keys
+	// reptiles has 0 keys
 }

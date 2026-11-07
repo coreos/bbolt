@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"runtime"
 	"sort"
@@ -157,6 +158,20 @@ func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 	return tx.root.ForEach(func(k, v []byte) error {
 		return fn(k, tx.root.Bucket(k))
 	})
+}
+
+// Buckets returns an iterator over each bucket in the root, yielding the bucket
+// name and the bucket itself, in lexicographical order.
+//
+//	for name, b := range tx.Buckets() {
+//		fmt.Println(string(name), b.Stats().KeyN)
+//	}
+//
+// It is the range-over-func equivalent of ForEach. Iteration panics if the
+// transaction is closed. The loop body must not create or delete top-level
+// buckets; this will result in undefined behavior.
+func (tx *Tx) Buckets() iter.Seq2[[]byte, *Bucket] {
+	return tx.root.Buckets()
 }
 
 // OnCommit adds a handler function to be executed after the transaction successfully commits.

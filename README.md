@@ -57,6 +57,7 @@ New minor versions may add additional features to the API.
       - [Prefix scans](#prefix-scans)
       - [Range scans](#range-scans)
       - [ForEach()](#foreach)
+      - [Range over iterators](#range-over-iterators)
     - [Nested buckets](#nested-buckets)
     - [Database backups](#database-backups)
     - [Statistics](#statistics)
@@ -327,6 +328,17 @@ db.View(func(tx *bolt.Tx) error {
 })
 ```
 
+Or range over them with `Tx.Buckets()`:
+
+```go
+db.View(func(tx *bolt.Tx) error {
+	for name, b := range tx.Buckets() {
+		fmt.Println(string(name), b.Stats().KeyN)
+	}
+	return nil
+})
+```
+
 ### Using key/value pairs
 
 To save a key/value pair to a bucket, use the `Bucket.Put()` function:
@@ -538,6 +550,47 @@ Please note that keys and values in `ForEach()` are only valid while
 the transaction is open. If you need to use a key or value outside of
 the transaction, you must use `copy()` to copy it to another byte
 slice.
+
+#### Range over iterators
+
+Buckets also provide [Go iterators](https://pkg.go.dev/iter) that can be used
+directly in a `for ... range` loop. Unlike `ForEach()`, you can stop early with
+`break` or `return` instead of returning a sentinel error:
+
+```go
+db.View(func(tx *bolt.Tx) error {
+	b := tx.Bucket([]byte("MyBucket"))
+
+	// All key/value pairs; nested buckets have a nil value.
+	for k, v := range b.All() {
+		if bytes.Equal(k, []byte("stop")) {
+			break
+		}
+		fmt.Printf("key=%s, value=%s\n", k, v)
+	}
+
+	// Keys only; nested bucket keys are included.
+	for k := range b.All() {
+		fmt.Printf("key=%s\n", k)
+	}
+
+	// Nested buckets only.
+	for name, child := range b.Buckets() {
+		fmt.Printf("bucket=%s, keys=%d\n", name, child.Stats().KeyN)
+	}
+	return nil
+})
+```
+
+| Iterator           | Yields                 | Equivalent to            |
+|--------------------|------------------------|--------------------------|
+| `Bucket.All()`     | `k, v []byte`          | `Bucket.ForEach()`       |
+| `Bucket.Buckets()` | `name []byte, *Bucket` | `Bucket.ForEachBucket()` |
+| `Tx.Buckets()`     | `name []byte, *Bucket` | `Tx.ForEach()`           |
+
+The same rules as `ForEach()` apply: the yielded keys and values are only
+valid while the transaction is open, and the bucket must not be modified inside
+the loop. Ranging over an iterator after its transaction is closed panics.
 
 ### Nested buckets
 

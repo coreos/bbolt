@@ -481,6 +481,50 @@ func TestTx_ForEach_WithError(t *testing.T) {
 	}
 }
 
+// Ensure that tx.Buckets yields every top-level bucket in order, matching
+// tx.ForEach, and stops when the loop breaks.
+func TestTx_Buckets(t *testing.T) {
+	db := btesting.MustCreateDB(t)
+
+	err := db.Update(func(tx *bolt.Tx) error {
+		for _, name := range []string{"widgets", "apples", "zebras"} {
+			b, err := tx.CreateBucket([]byte(name))
+			require.NoError(t, err)
+			require.NoError(t, b.Put([]byte("name"), []byte(name)))
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	err = db.View(func(tx *bolt.Tx) error {
+		var want [][]byte
+		require.NoError(t, tx.ForEach(func(name []byte, b *bolt.Bucket) error {
+			want = append(want, name)
+			return nil
+		}))
+
+		var got [][]byte
+		for name, b := range tx.Buckets() {
+			got = append(got, name)
+			require.NotNil(t, b)
+			assert.Equal(t, name, b.Get([]byte("name")))
+		}
+		assert.Equal(t, [][]byte{[]byte("apples"), []byte("widgets"), []byte("zebras")}, got)
+		assert.Equal(t, want, got)
+
+		var index int
+		for range tx.Buckets() {
+			if index == 1 {
+				break
+			}
+			index++
+		}
+		assert.Equal(t, 1, index)
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 // Ensure that Tx commit handlers are called after a transaction successfully commits.
 func TestTx_OnCommit(t *testing.T) {
 	db := btesting.MustCreateDB(t)
@@ -794,6 +838,47 @@ func TestTx_releaseRange(t *testing.T) {
 	checkWithReadTxn(rtx7, "k3", nil)
 	checkWithReadTxn(rtx7, "k4", []byte("v4"))
 	rollback(rtx7)
+}
+
+func ExampleTx_Buckets() {
+	// Open the database.
+	db, err := bolt.Open(tempfile(), 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(db.Path())
+
+	// Create a few top-level buckets.
+	if err := db.Update(func(tx *bolt.Tx) error {
+		for _, name := range []string{"widgets", "apples", "zebras"} {
+			if _, err := tx.CreateBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Iterate over the top-level buckets in sorted order.
+	if err := db.View(func(tx *bolt.Tx) error {
+		for name := range tx.Buckets() {
+			fmt.Println(string(name))
+		}
+		return nil
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Close database to release file lock.
+	if err := db.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Output:
+	// apples
+	// widgets
+	// zebras
 }
 
 func ExampleTx_Rollback() {

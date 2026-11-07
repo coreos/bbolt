@@ -3,6 +3,7 @@ package bbolt
 import (
 	"bytes"
 	"fmt"
+	"iter"
 	"unsafe"
 
 	"go.etcd.io/bbolt/errors"
@@ -681,6 +682,54 @@ func (b *Bucket) ForEachBucket(fn func(k []byte) error) error {
 		}
 	}
 	return nil
+}
+
+// All returns an iterator over each key/value pair in the bucket, in
+// lexicographical key order. Nested buckets are yielded with a nil value.
+//
+//	for k, v := range b.All() {
+//		fmt.Printf("key=%s, value=%s\n", k, v)
+//	}
+//
+// It is the range-over-func equivalent of ForEach. Iteration panics if the
+// transaction is closed. The yielded key and value are only valid for the life
+// of the transaction. The loop body must not modify the bucket; this will result
+// in undefined behavior.
+func (b *Bucket) All() iter.Seq2[[]byte, []byte] {
+	return func(yield func([]byte, []byte) bool) {
+		c := b.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
+
+// Buckets returns an iterator over each nested bucket in the bucket, yielding
+// the bucket name and the bucket itself, in lexicographical order. Keys that
+// are not buckets are skipped.
+//
+//	for name, child := range b.Buckets() {
+//		fmt.Println(string(name), child.Stats().KeyN)
+//	}
+//
+// It is the range-over-func equivalent of ForEachBucket. Iteration panics if
+// the transaction is closed. The yielded name and bucket are only valid for the
+// life of the transaction. The loop body must not create or delete buckets in
+// this bucket; this will result in undefined behavior.
+func (b *Bucket) Buckets() iter.Seq2[[]byte, *Bucket] {
+	return func(yield func([]byte, *Bucket) bool) {
+		common.Assert(b.tx.db != nil, "tx closed")
+		c := b.Cursor()
+		for k, _, flags := c.first(); k != nil; k, _, flags = c.next() {
+			if flags&common.BucketLeafFlag != 0 {
+				if !yield(k, b.Bucket(k)) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // Stats returns stats on a bucket.
