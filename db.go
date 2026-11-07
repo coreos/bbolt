@@ -365,13 +365,19 @@ func (db *DB) getPageSize() (int, error) {
 	return 0, berrors.ErrInvalid
 }
 
+// metaBuffer returns a 4KB buffer aligned for *common.Page, unlike a [0x1000]byte.
+func metaBuffer() []byte {
+	var words [0x1000 / 8]uint64
+	return common.UnsafeByteSlice(unsafe.Pointer(&words), 0, 0, len(words)*8)
+}
+
 // getPageSizeFromFirstMeta reads the pageSize from the first meta page
 func (db *DB) getPageSizeFromFirstMeta() (int, bool, error) {
-	var buf [0x1000]byte
+	buf := metaBuffer()
 	var metaCanRead bool
-	if bw, err := db.file.ReadAt(buf[:], 0); err == nil && bw == len(buf) {
+	if bw, err := db.file.ReadAt(buf, 0); err == nil && bw == len(buf) {
 		metaCanRead = true
-		if m := db.pageInBuffer(buf[:], 0).Meta(); m.Validate() == nil {
+		if m := db.pageInBuffer(buf, 0).Meta(); m.Validate() == nil {
 			return int(m.PageSize()), metaCanRead, nil
 		}
 	}
@@ -399,15 +405,15 @@ func (db *DB) getPageSizeFromSecondMeta() (int, bool, error) {
 	//
 	// TODO: should we support larger page size?
 	for i := 0; i <= 14; i++ {
-		var buf [0x1000]byte
+		buf := metaBuffer()
 		var pos int64 = 1024 << uint(i)
 		if pos >= fileSize-1024 {
 			break
 		}
-		bw, err := db.file.ReadAt(buf[:], pos)
+		bw, err := db.file.ReadAt(buf, pos)
 		if (err == nil && bw == len(buf)) || (err == io.EOF && int64(bw) == (fileSize-pos)) {
 			metaCanRead = true
-			if m := db.pageInBuffer(buf[:], 0).Meta(); m.Validate() == nil {
+			if m := db.pageInBuffer(buf, 0).Meta(); m.Validate() == nil {
 				return int(m.PageSize()), metaCanRead, nil
 			}
 		}
