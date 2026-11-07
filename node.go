@@ -80,8 +80,7 @@ func (n *node) childAt(index int) *node {
 
 // childIndex returns the index of a given child node.
 func (n *node) childIndex(child *node) int {
-	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].Key(), child.key) != -1 })
-	return index
+	return n.inodes.Search(child.key)
 }
 
 // numChildren returns the number of children.
@@ -124,7 +123,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgId common.Pgid, flags uint32)
 	}
 
 	// Find insertion index.
-	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].Key(), oldKey) != -1 })
+	index := n.inodes.Search(oldKey)
 
 	// Add capacity and shift nodes if we don't have an exact match and need to insert.
 	exact := len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].Key(), oldKey)
@@ -144,7 +143,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgId common.Pgid, flags uint32)
 // del removes a key from the node.
 func (n *node) del(key []byte) {
 	// Find index of key.
-	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].Key(), key) != -1 })
+	index := n.inodes.Search(key)
 
 	// Exit if the key isn't found.
 	if index >= len(n.inodes) || !bytes.Equal(n.inodes[index].Key(), key) {

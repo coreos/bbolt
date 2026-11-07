@@ -1,6 +1,9 @@
 package common
 
-import "unsafe"
+import (
+	"bytes"
+	"unsafe"
+)
 
 // Inode represents an internal node inside of a node.
 // It can be used to point to elements in a page or point
@@ -13,6 +16,40 @@ type Inode struct {
 }
 
 type Inodes []Inode
+
+// Search returns the lowest index i where inodes[i].Key() >= key.
+func (inodes Inodes) Search(key []byte) int {
+	low, high := 0, len(inodes)
+	for low < high {
+		mid := int(uint(low+high) >> 1)
+		if bytes.Compare(inodes[mid].Key(), key) < 0 {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+	return low
+}
+
+// SearchExact returns the index and whether an exact match was found.
+func (inodes Inodes) SearchExact(key []byte) (int, bool) {
+	low, high := 0, len(inodes)
+	exact := false
+	for low < high {
+		mid := int(uint(low+high) >> 1)
+		ret := bytes.Compare(inodes[mid].Key(), key)
+		if ret == 0 {
+			exact = true
+			low = mid
+			break
+		} else if ret < 0 {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+	return low, exact
+}
 
 func (in *Inode) Flags() uint32 {
 	return in.flags

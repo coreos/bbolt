@@ -103,10 +103,11 @@ func (b *Bucket) Cursor() *Cursor {
 	b.tx.stats.IncCursorCount(1)
 
 	// Allocate and return a cursor.
-	return &Cursor{
+	c := &Cursor{
 		bucket: b,
-		stack:  make([]elemRef, 0),
 	}
+	c.stack = c.initialStack[:0]
+	return c
 }
 
 // Bucket retrieves a nested bucket by name.

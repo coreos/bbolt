@@ -1,9 +1,7 @@
 package bbolt
 
 import (
-	"bytes"
 	"fmt"
-	"sort"
 
 	"go.etcd.io/bbolt/errors"
 	"go.etcd.io/bbolt/internal/common"
@@ -20,8 +18,9 @@ import (
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
 type Cursor struct {
-	bucket *Bucket
-	stack  []elemRef
+	bucket       *Bucket
+	stack        []elemRef
+	initialStack [16]elemRef
 }
 
 // Bucket returns the bucket that this cursor was created from.
@@ -302,16 +301,7 @@ func (c *Cursor) search(key []byte, pgId common.Pgid) {
 }
 
 func (c *Cursor) searchNode(key []byte, n *node) {
-	var exact bool
-	index := sort.Search(len(n.inodes), func(i int) bool {
-		// TODO(benbjohnson): Optimize this range search. It's a bit hacky right now.
-		// sort.Search() finds the lowest index where f() != -1 but we need the highest index.
-		ret := bytes.Compare(n.inodes[i].Key(), key)
-		if ret == 0 {
-			exact = true
-		}
-		return ret != -1
-	})
+	index, exact := n.inodes.SearchExact(key)
 	if !exact && index > 0 {
 		index--
 	}
@@ -322,26 +312,14 @@ func (c *Cursor) searchNode(key []byte, n *node) {
 }
 
 func (c *Cursor) searchPage(key []byte, p *common.Page) {
-	// Binary search for the correct range.
-	inodes := p.BranchPageElements()
-
-	var exact bool
-	index := sort.Search(int(p.Count()), func(i int) bool {
-		// TODO(benbjohnson): Optimize this range search. It's a bit hacky right now.
-		// sort.Search() finds the lowest index where f() != -1 but we need the highest index.
-		ret := bytes.Compare(inodes[i].Key(), key)
-		if ret == 0 {
-			exact = true
-		}
-		return ret != -1
-	})
+	index, exact := p.SearchBranchPageElements(key)
 	if !exact && index > 0 {
 		index--
 	}
 	c.stack[len(c.stack)-1].index = index
 
 	// Recursively search to the next page.
-	c.search(key, inodes[index].Pgid())
+	c.search(key, p.BranchPageElement(uint16(index)).Pgid())
 }
 
 // nsearch searches the leaf node on the top of the stack for a key.
@@ -351,19 +329,12 @@ func (c *Cursor) nsearch(key []byte) {
 
 	// If we have a node then search its inodes.
 	if n != nil {
-		index := sort.Search(len(n.inodes), func(i int) bool {
-			return bytes.Compare(n.inodes[i].Key(), key) != -1
-		})
-		e.index = index
+		e.index = n.inodes.Search(key)
 		return
 	}
 
 	// If we have a page then search its leaf elements.
-	inodes := p.LeafPageElements()
-	index := sort.Search(int(p.Count()), func(i int) bool {
-		return bytes.Compare(inodes[i].Key(), key) != -1
-	})
-	e.index = index
+	e.index = p.SearchLeafPageElements(key)
 }
 
 // keyValue returns the key and value of the current leaf element.

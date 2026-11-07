@@ -1,9 +1,9 @@
 package common
 
 import (
+	"bytes"
 	"fmt"
 	"os"
-	"sort"
 	"unsafe"
 )
 
@@ -388,7 +388,17 @@ func Mergepgids(dst, a, b Pgids) {
 	// Continue while there are elements in the lead.
 	for len(lead) > 0 {
 		// Merge largest prefix of lead that is ahead of follow[0].
-		n := sort.Search(len(lead), func(i int) bool { return lead[i] > follow[0] })
+		low, high := 0, len(lead)
+		target := follow[0]
+		for low < high {
+			mid := int(uint(low+high) >> 1)
+			if lead[mid] <= target {
+				low = mid + 1
+			} else {
+				high = mid
+			}
+		}
+		n := low
 		merged = append(merged, lead[:n]...)
 		if n >= len(lead) {
 			break
@@ -400,4 +410,40 @@ func Mergepgids(dst, a, b Pgids) {
 
 	// Append what's left in follow.
 	_ = append(merged, follow...)
+}
+
+// SearchBranchPageElements performs binary search on branch page elements.
+func (p *Page) SearchBranchPageElements(key []byte) (int, bool) {
+	inodes := p.BranchPageElements()
+	low, high := 0, len(inodes)
+	exact := false
+	for low < high {
+		mid := int(uint(low+high) >> 1)
+		ret := bytes.Compare(inodes[mid].Key(), key)
+		if ret == 0 {
+			exact = true
+			low = mid
+			break
+		} else if ret < 0 {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+	return low, exact
+}
+
+// SearchLeafPageElements performs binary search on leaf page elements.
+func (p *Page) SearchLeafPageElements(key []byte) int {
+	inodes := p.LeafPageElements()
+	low, high := 0, len(inodes)
+	for low < high {
+		mid := int(uint(low+high) >> 1)
+		if bytes.Compare(inodes[mid].Key(), key) < 0 {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+	return low
 }
