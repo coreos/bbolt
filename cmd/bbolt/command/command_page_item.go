@@ -65,13 +65,13 @@ func pageItemFunc(cmd *cobra.Command, cfg pageItemOptions, dbPath string, pageID
 	}
 
 	if !cfg.valueOnly {
-		err := pageItemPrintLeafItemKey(cmd.OutOrStdout(), buf, uint16(itemID), cfg.format)
+		err := pageItemPrintLeafItemKey(cmd.OutOrStdout(), buf, itemID, cfg.format)
 		if err != nil {
 			return err
 		}
 	}
 	if !cfg.keyOnly {
-		err := pageItemPrintLeafItemValue(cmd.OutOrStdout(), buf, uint16(itemID), cfg.format)
+		err := pageItemPrintLeafItemValue(cmd.OutOrStdout(), buf, itemID, cfg.format)
 		if err != nil {
 			return err
 		}
@@ -80,7 +80,7 @@ func pageItemFunc(cmd *cobra.Command, cfg pageItemOptions, dbPath string, pageID
 	return
 }
 
-func pageItemPrintLeafItemKey(w io.Writer, pageBytes []byte, index uint16, format string) error {
+func pageItemPrintLeafItemKey(w io.Writer, pageBytes []byte, index uint64, format string) error {
 	k, _, err := pageItemLeafPageElement(pageBytes, index)
 	if err != nil {
 		return err
@@ -89,7 +89,7 @@ func pageItemPrintLeafItemKey(w io.Writer, pageBytes []byte, index uint16, forma
 	return writelnBytes(w, k, format)
 }
 
-func pageItemPrintLeafItemValue(w io.Writer, pageBytes []byte, index uint16, format string) error {
+func pageItemPrintLeafItemValue(w io.Writer, pageBytes []byte, index uint64, format string) error {
 	_, v, err := pageItemLeafPageElement(pageBytes, index)
 	if err != nil {
 		return err
@@ -97,15 +97,15 @@ func pageItemPrintLeafItemValue(w io.Writer, pageBytes []byte, index uint16, for
 	return writelnBytes(w, v, format)
 }
 
-func pageItemLeafPageElement(pageBytes []byte, index uint16) ([]byte, []byte, error) {
+func pageItemLeafPageElement(pageBytes []byte, index uint64) ([]byte, []byte, error) {
 	p := common.LoadPage(pageBytes)
-	if index >= p.Count() {
+	if index >= uint64(p.Count()) {
 		return nil, nil, fmt.Errorf("leafPageElement: expected item index less than %d, but got %d", p.Count(), index)
 	}
 	if p.Typ() != "leaf" {
 		return nil, nil, fmt.Errorf("leafPageElement: expected page type of 'leaf', but got '%s'", p.Typ())
 	}
 
-	e := p.LeafPageElement(index)
+	e := p.LeafPageElement(uint16(index))
 	return e.Key(), e.Value(), nil
 }
