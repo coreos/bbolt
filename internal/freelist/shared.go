@@ -2,7 +2,6 @@ package freelist
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"unsafe"
 
@@ -138,23 +137,51 @@ func (t txIDx) Len() int           { return len(t) }
 func (t txIDx) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 func (t txIDx) Less(i, j int) bool { return t[i] < t[j] }
 
+// safe to release iff no readonly transaction in the range [allocTx, freeTx)
+func isSafeToRelease(readonlyTXIDs []common.Txid, allocTx, freeTx common.Txid) bool {
+	for _, rt := range readonlyTXIDs {
+		if allocTx <= rt && rt < freeTx {
+			return false
+		}
+	}
+	return true
+}
+
 func (t *shared) ReleasePendingPages() {
-	// Free all pending pages prior to the earliest open transaction.
-	sort.Sort(txIDx(t.readonlyTXIDs))
-	minid := common.Txid(math.MaxUint64)
-	if len(t.readonlyTXIDs) > 0 {
-		minid = t.readonlyTXIDs[0]
+	if len(t.pending) == 0 {
+		return
 	}
-	if minid > 0 {
-		t.release(minid - 1)
+
+	var releasedPages common.Pgids
+
+	for tid, txp := range t.pending {
+		newIDs := txp.ids[:0]
+		newAlloctx := txp.alloctx[:0]
+
+		for i, id := range txp.ids {
+			allocTx := txp.alloctx[i]
+			if isSafeToRelease(t.readonlyTXIDs, allocTx, tid) {
+				releasedPages = append(releasedPages, id)
+				continue
+			}
+
+			newIDs = append(newIDs, id)
+			newAlloctx = append(newAlloctx, allocTx)
+		}
+
+		// update pending txp with the new list of ids and alloctx, if any were removed
+		// then we can safely release them to the free list
+		if len(newIDs) == 0 {
+			delete(t.pending, tid)
+		} else {
+			txp.ids = newIDs
+			txp.alloctx = newAlloctx
+		}
 	}
-	// Release unused txid extents.
-	for _, tid := range t.readonlyTXIDs {
-		t.releaseRange(minid, tid-1)
-		minid = tid + 1
+
+	if len(releasedPages) > 0 {
+		t.mergeSpans(releasedPages)
 	}
-	t.releaseRange(minid, common.Txid(math.MaxUint64))
-	// Any page both allocated and freed in an extent is safe to release.
 }
 
 func (t *shared) release(txid common.Txid) {

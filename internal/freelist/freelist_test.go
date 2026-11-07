@@ -87,30 +87,32 @@ func TestFreelist_free_freelist_alloctx(t *testing.T) {
 	}
 }
 
-// Ensure that a transaction's free pages can be released.
-func TestFreelist_release(t *testing.T) {
+// Ensure that a transaction's free pages can be released through ReleasePendingPages().
+func TestFreelist_ReleasePendingPages_ReleaseUpTo(t *testing.T) {
 	f := newTestFreelist()
 	f.Free(100, common.NewPage(12, 0, 0, 1))
 	f.Free(100, common.NewPage(9, 0, 0, 0))
 	f.Free(102, common.NewPage(39, 0, 0, 0))
-	f.release(100)
-	f.release(101)
+
+	releaseUpTo := func(txid common.Txid) {
+		f.AddReadonlyTXID(txid)
+		f.ReleasePendingPages()
+		f.RemoveReadonlyTXID(txid)
+	}
+
+	releaseUpTo(101)
 	if exp := common.Pgids([]common.Pgid{9, 12, 13}); !reflect.DeepEqual(exp, f.freePageIds()) {
 		t.Fatalf("exp=%v; got=%v", exp, f.freePageIds())
 	}
 
-	f.release(102)
+	releaseUpTo(103)
 	if exp := common.Pgids([]common.Pgid{9, 12, 13, 39}); !reflect.DeepEqual(exp, f.freePageIds()) {
 		t.Fatalf("exp=%v; got=%v", exp, f.freePageIds())
 	}
 }
 
-// Ensure that releaseRange handles boundary conditions correctly
-func TestFreelist_releaseRange(t *testing.T) {
-	type testRange struct {
-		begin, end common.Txid
-	}
-
+// Ensure that pending pages are released through ReleasePendingPages() only when safe.
+func TestFreelist_ReleasePendingPages_BoundaryCases(t *testing.T) {
 	type testPage struct {
 		id       common.Pgid
 		n        int
@@ -118,82 +120,44 @@ func TestFreelist_releaseRange(t *testing.T) {
 		freeTxn  common.Txid
 	}
 
-	var releaseRangeTests = []struct {
-		title         string
-		pagesIn       []testPage
-		releaseRanges []testRange
-		wantFree      []common.Pgid
+	var releasePendingTests = []struct {
+		title       string
+		pagesIn     []testPage
+		readonlyTxs []common.Txid
+		wantFree    []common.Pgid
 	}{
 		{
-			title:         "Single pending in range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{1, 300}},
-			wantFree:      []common.Pgid{3},
+			title:       "release pages when no readonly transaction exists",
+			pagesIn:     []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			readonlyTxs: []common.Txid{},
+			wantFree:    []common.Pgid{3},
 		},
 		{
-			title:         "Single pending with minimum end range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{1, 200}},
-			wantFree:      []common.Pgid{3},
+			title:       "readonly transaction before allocation is safe",
+			pagesIn:     []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			readonlyTxs: []common.Txid{99},
+			wantFree:    []common.Pgid{3},
 		},
 		{
-			title:         "Single pending outsize minimum end range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{1, 199}},
-			wantFree:      []common.Pgid{},
+			title:       "readonly transaction at allocTxn blocks release",
+			pagesIn:     []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			readonlyTxs: []common.Txid{100},
+			wantFree:    []common.Pgid{},
 		},
 		{
-			title:         "Single pending with minimum begin range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{100, 300}},
-			wantFree:      []common.Pgid{3},
+			title:       "readonly transaction just before freeTxn blocks release",
+			pagesIn:     []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			readonlyTxs: []common.Txid{199},
+			wantFree:    []common.Pgid{},
 		},
 		{
-			title:         "Single pending outside minimum begin range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
-			releaseRanges: []testRange{{101, 300}},
-			wantFree:      []common.Pgid{},
+			title:       "boundary at freeTxn is safe",
+			pagesIn:     []testPage{{id: 3, n: 1, allocTxn: 100, freeTxn: 200}},
+			readonlyTxs: []common.Txid{200},
+			wantFree:    []common.Pgid{3},
 		},
 		{
-			title:         "Single pending in minimum range",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 199, freeTxn: 200}},
-			releaseRanges: []testRange{{199, 200}},
-			wantFree:      []common.Pgid{3},
-		},
-		{
-			title:         "Single pending and read transaction at 199",
-			pagesIn:       []testPage{{id: 3, n: 1, allocTxn: 199, freeTxn: 200}},
-			releaseRanges: []testRange{{100, 198}, {200, 300}},
-			wantFree:      []common.Pgid{},
-		},
-		{
-			title: "Adjacent pending and read transactions at 199, 200",
-			pagesIn: []testPage{
-				{id: 3, n: 1, allocTxn: 199, freeTxn: 200},
-				{id: 4, n: 1, allocTxn: 200, freeTxn: 201},
-			},
-			releaseRanges: []testRange{
-				{100, 198},
-				{200, 199}, // Simulate the ranges db.freePages might produce.
-				{201, 300},
-			},
-			wantFree: []common.Pgid{},
-		},
-		{
-			title: "Out of order ranges",
-			pagesIn: []testPage{
-				{id: 3, n: 1, allocTxn: 199, freeTxn: 200},
-				{id: 4, n: 1, allocTxn: 200, freeTxn: 201},
-			},
-			releaseRanges: []testRange{
-				{201, 199},
-				{201, 200},
-				{200, 200},
-			},
-			wantFree: []common.Pgid{},
-		},
-		{
-			title: "Multiple pending, read transaction at 150",
+			title: "release only pages outside readonly transaction range",
 			pagesIn: []testPage{
 				{id: 3, n: 1, allocTxn: 100, freeTxn: 200},
 				{id: 4, n: 1, allocTxn: 100, freeTxn: 125},
@@ -202,12 +166,12 @@ func TestFreelist_releaseRange(t *testing.T) {
 				{id: 7, n: 2, allocTxn: 150, freeTxn: 175},
 				{id: 9, n: 2, allocTxn: 175, freeTxn: 200},
 			},
-			releaseRanges: []testRange{{50, 149}, {151, 300}},
-			wantFree:      []common.Pgid{4, 9, 10},
+			readonlyTxs: []common.Txid{150},
+			wantFree:    []common.Pgid{4, 5, 9, 10},
 		},
 	}
 
-	for _, c := range releaseRangeTests {
+	for _, c := range releasePendingTests {
 		t.Run(c.title, func(t *testing.T) {
 			f := newTestFreelist()
 			var ids []common.Pgid
@@ -225,13 +189,88 @@ func TestFreelist_releaseRange(t *testing.T) {
 				f.Free(p.freeTxn, common.NewPage(p.id, 0, 0, uint32(p.n-1)))
 			}
 
-			for _, r := range c.releaseRanges {
-				f.releaseRange(r.begin, r.end)
+			for _, txid := range c.readonlyTxs {
+				f.AddReadonlyTXID(txid)
+			}
+			f.ReleasePendingPages()
+			for _, txid := range c.readonlyTxs {
+				f.RemoveReadonlyTXID(txid)
 			}
 
 			require.Equal(t, common.Pgids(c.wantFree), f.freePageIds())
 		})
 	}
+}
+
+func TestFreelist_ReleasePendingPages_SafeReleasePredicate(t *testing.T) {
+	f := newTestFreelist()
+	f.pendingPageIds()[200] = &txPending{
+		ids:     []common.Pgid{10, 20},
+		alloctx: []common.Txid{100, 150},
+	}
+
+	f.AddReadonlyTXID(120)
+	f.ReleasePendingPages()
+
+	require.Equal(t, common.Pgids{20}, f.freePageIds())
+	require.Equal(t, []common.Pgid{10}, f.pendingPageIds()[200].ids)
+}
+
+func TestFreelist_ReleasePendingPages_BeforeAllocationIsSafe(t *testing.T) {
+	f := newTestFreelist()
+
+	f.pendingPageIds()[200] = &txPending{
+		ids:     []common.Pgid{10},
+		alloctx: []common.Txid{100},
+	}
+
+	f.AddReadonlyTXID(99)
+
+	f.ReleasePendingPages()
+
+	require.Empty(t, f.pendingPageIds())
+	require.Equal(t, common.Pgids{10}, f.freePageIds())
+}
+
+func TestFreelist_ReleasePendingPages_ReleasesAllWhenNoReadonlyTransactions(t *testing.T) {
+	f := newTestFreelist()
+	f.pendingPageIds()[200] = &txPending{
+		ids:     []common.Pgid{10, 20},
+		alloctx: []common.Txid{100, 150},
+	}
+
+	f.ReleasePendingPages()
+
+	require.Empty(t, f.pendingPageIds())
+	require.Equal(t, common.Pgids{10, 20}, f.freePageIds())
+}
+
+func TestFreelist_ReleasePendingPages_KeepPendingWhenReadTxnIntersectsInFlightPage(t *testing.T) {
+	f := newTestFreelist()
+	f.pendingPageIds()[200] = &txPending{
+		ids:     []common.Pgid{10},
+		alloctx: []common.Txid{100},
+	}
+
+	f.AddReadonlyTXID(100)
+	f.ReleasePendingPages()
+
+	require.Equal(t, 1, f.PendingCount())
+	require.Empty(t, f.freePageIds())
+}
+
+func TestFreelist_ReleasePendingPages_BoundaryAtFreeTxIsSafe(t *testing.T) {
+	f := newTestFreelist()
+	f.pendingPageIds()[200] = &txPending{
+		ids:     []common.Pgid{10},
+		alloctx: []common.Txid{100},
+	}
+
+	f.AddReadonlyTXID(200)
+	f.ReleasePendingPages()
+
+	require.Empty(t, f.pendingPageIds())
+	require.Equal(t, common.Pgids{10}, f.freePageIds())
 }
 
 func TestFreeList_init(t *testing.T) {
@@ -579,7 +618,9 @@ func benchmark_FreelistRelease(b *testing.B, size int) {
 		f := newTestFreelist()
 		f.pendingPageIds()[1] = txp
 		f.Init(ids)
-		f.release(1)
+		f.AddReadonlyTXID(2)
+		f.ReleasePendingPages()
+		f.RemoveReadonlyTXID(2)
 	}
 }
 
