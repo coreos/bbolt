@@ -1,6 +1,7 @@
 package freelist
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -85,7 +86,104 @@ func Test_Freelist_Array_Rollback(t *testing.T) {
 	require.Equal(t, map[common.Txid]*txPending{}, f.pending)
 }
 
+func TestFreelistArray_mergeSpans_reusesCapacity(t *testing.T) {
+	backing := make(common.Pgids, 2, 4)
+	backing[0], backing[1] = 3, 8
+
+	f := newTestArrayFreelist()
+	f.Init(backing)
+	f.mergeSpans(common.Pgids{5, 9})
+
+	require.Equal(t, common.Pgids{3, 5, 8, 9}, f.freePageIds())
+	require.Equal(t, 4, f.FreeCount())
+	require.Same(t, &backing[0], &f.freePageIds()[0])
+}
+
 func newTestArrayFreelist() *array {
 	f := NewArrayFreelist()
 	return f.(*array)
+}
+
+func benchmarkArrayInitAndMergePgids(maxPgid, mergeCount, mergeSpanLen int, spareCapacity int) (common.Pgids, common.Pgids) {
+	const gapSize = 100
+
+	mergeSpanCount := (mergeCount + mergeSpanLen - 1) / mergeSpanLen
+	requiredPageCount := mergeCount + mergeSpanCount - 1
+	if requiredPageCount > maxPgid-1 {
+		panic("invalid benchmark parameters: insufficient pgid space")
+	}
+
+	freeCount := maxPgid - mergeCount - mergeSpanCount + 1
+	initIDs := make(common.Pgids, 0, freeCount+spareCapacity)
+	mergePgids := make(common.Pgids, 0, mergeCount)
+	next := common.Pgid(2)
+	remaining := mergeCount
+
+	for remaining > 0 {
+		spanLen := min(mergeSpanLen, remaining)
+		for i := range spanLen {
+			mergePgids = append(mergePgids, next+common.Pgid(i))
+		}
+
+		next += common.Pgid(spanLen)
+		remaining -= spanLen
+		if remaining == 0 {
+			break
+		}
+
+		for range gapSize {
+			initIDs = append(initIDs, next)
+			next++
+		}
+	}
+
+	for ; next <= common.Pgid(maxPgid); next++ {
+		initIDs = append(initIDs, next)
+	}
+
+	return initIDs, mergePgids
+}
+
+func benchmarkArrayMergeSpans(b *testing.B, initIDs, mergePgids common.Pgids) {
+	b.ReportAllocs()
+	mergeIDs := append(common.Pgids(nil), mergePgids...)
+	for b.Loop() {
+		b.StopTimer()
+		f := newTestArrayFreelist()
+		f.Init(initIDs)
+		b.StartTimer()
+
+		f.mergeSpans(mergeIDs)
+		b.StopTimer()
+		require.Equal(b, len(initIDs)+len(mergeIDs), f.FreeCount())
+		b.StartTimer()
+	}
+}
+
+func Benchmark_freelist_arrayMergeSpans(b *testing.B) {
+	testCases := []struct {
+		maxPgid    int
+		mergeCount int
+	}{
+		{maxPgid: 1000, mergeCount: 500},
+		{maxPgid: 5000, mergeCount: 2500},
+		{maxPgid: 10000, mergeCount: 5000},
+	}
+
+	for _, tc := range testCases {
+		for _, mergeSpanLen := range []int{1, 16, 32, 64} {
+			name := fmt.Sprintf("max%d_merge%d_span%d", tc.maxPgid, tc.mergeCount, mergeSpanLen)
+			coldInit, mergePgids := benchmarkArrayInitAndMergePgids(tc.maxPgid, tc.mergeCount, mergeSpanLen, 0)
+			warmInit, _ := benchmarkArrayInitAndMergePgids(tc.maxPgid, tc.mergeCount, mergeSpanLen, tc.mergeCount)
+
+			b.Run(name, func(b *testing.B) {
+				b.Run("cold", func(b *testing.B) {
+					benchmarkArrayMergeSpans(b, coldInit, mergePgids)
+				})
+				b.Run("warm", func(b *testing.B) {
+					benchmarkArrayMergeSpans(b, warmInit, mergePgids)
+				})
+			})
+		}
+	}
 }

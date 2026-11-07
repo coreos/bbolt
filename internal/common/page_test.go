@@ -5,6 +5,8 @@ import (
 	"sort"
 	"testing"
 	"testing/quick"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Ensure that the page type can be returned in human readable format.
@@ -68,5 +70,71 @@ func TestPgids_merge_quick(t *testing.T) {
 		return true
 	}, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPgids_mergeInPlace(t *testing.T) {
+	tests := []struct {
+		name string
+		a    Pgids
+		b    Pgids
+		want Pgids
+	}{
+		{name: "interleaved", a: Pgids{2, 5, 8}, b: Pgids{3, 4, 9}, want: Pgids{2, 3, 4, 5, 8, 9}},
+		{name: "leading", a: Pgids{2, 3}, b: Pgids{10, 12}, want: Pgids{2, 3, 10, 12}},
+		{name: "trailing", a: Pgids{10, 12}, b: Pgids{2, 3}, want: Pgids{2, 3, 10, 12}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backing := make(Pgids, len(tt.a), len(tt.a)+len(tt.b))
+			copy(backing, tt.a)
+
+			got := backing.Merge(tt.b)
+			require.Equal(t, tt.want, got)
+			if len(tt.a) != 0 && len(tt.b) != 0 && &got[0] != &backing[0] {
+				t.Fatal("Merge did not reuse the destination backing array")
+			}
+		})
+	}
+}
+
+var benchmarkPgidsMergeSink Pgids
+
+func benchmarkPgids(size int) (Pgids, Pgids) {
+	a := make(Pgids, 0, size)
+	ids := make(Pgids, 0, size)
+	for i := range 2 * size {
+		id := Pgid(2 + 2*i)
+		if i%2 == 0 {
+			a = append(a, id)
+		} else {
+			ids = append(ids, id)
+		}
+	}
+
+	return a, ids
+}
+
+func BenchmarkPgids_merge(b *testing.B) {
+	const size = 10000
+	a, ids := benchmarkPgids(size)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		benchmarkPgidsMergeSink = a.Merge(ids)
+	}
+}
+
+func BenchmarkPgids_mergeInPlace(b *testing.B) {
+	const size = 10000
+	srcA, srcB := benchmarkPgids(size)
+	dst := make(Pgids, 0, 2*size)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		s := dst[:size]
+		copy(s, srcA)
+		benchmarkPgidsMergeSink = s.Merge(srcB)
 	}
 }

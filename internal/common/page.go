@@ -3,7 +3,7 @@ package common
 import (
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"unsafe"
 )
 
@@ -346,7 +346,10 @@ func (s Pgids) Len() int           { return len(s) }
 func (s Pgids) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s Pgids) Less(i, j int) bool { return s[i] < s[j] }
 
-// Merge returns the sorted union of a and b.
+// Merge returns the sorted union of a and b, reusing the backing array of s
+// when it has enough spare capacity. The backing array of s is overwritten,
+// so the returned slice must be used instead of s. Both inputs must be sorted
+// and must not contain the same page ID or alias each other.
 func (s Pgids) Merge(b Pgids) Pgids {
 	// Return the opposite slice if one is nil.
 	if len(s) == 0 {
@@ -355,49 +358,54 @@ func (s Pgids) Merge(b Pgids) Pgids {
 	if len(b) == 0 {
 		return s
 	}
-	merged := make(Pgids, len(s)+len(b))
-	Mergepgids(merged, s, b)
+
+	total := len(s) + len(b)
+	merged := slices.Grow(s, len(b))[:total]
+	mergepgidsInPlace(merged, s, b)
 	return merged
 }
 
 // Mergepgids copies the sorted union of a and b into dst.
-// If dst is too small, it panics.
+// The inputs must be sorted and must not contain the same page ID.
+// The dst must not overlap either input. If dst is too small, it panics.
 func Mergepgids(dst, a, b Pgids) {
 	if len(dst) < len(a)+len(b) {
 		panic(fmt.Errorf("mergepgids bad len %d < %d + %d", len(dst), len(a), len(b)))
 	}
-	// Copy in the opposite slice if one is nil.
-	if len(a) == 0 {
-		copy(dst, b)
-		return
-	}
-	if len(b) == 0 {
-		copy(dst, a)
-		return
-	}
 
-	// Merged will hold all elements from both lists.
-	merged := dst[:0]
-
-	// Assign lead to the slice with a lower starting value, follow to the higher value.
-	lead, follow := a, b
-	if b[0] < a[0] {
-		lead, follow = b, a
-	}
-
-	// Continue while there are elements in the lead.
-	for len(lead) > 0 {
-		// Merge largest prefix of lead that is ahead of follow[0].
-		n := sort.Search(len(lead), func(i int) bool { return lead[i] > follow[0] })
-		merged = append(merged, lead[:n]...)
-		if n >= len(lead) {
-			break
+	i, j, k := 0, 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i] < b[j] {
+			dst[k] = a[i]
+			i++
+		} else {
+			dst[k] = b[j]
+			j++
 		}
-
-		// Swap lead and follow.
-		lead, follow = follow, lead[n:]
+		k++
 	}
 
-	// Append what's left in follow.
-	_ = append(merged, follow...)
+	if i < len(a) {
+		copy(dst[k:], a[i:])
+		return
+	}
+	copy(dst[k:], b[j:])
+}
+
+func mergepgidsInPlace(dst, a, b Pgids) {
+	i, j := len(a), len(b)
+	for k := len(dst); k > 0; {
+		k--
+		switch {
+		case i == 0:
+			dst[k] = b[j-1]
+			j--
+		case j == 0 || a[i-1] > b[j-1]:
+			dst[k] = a[i-1]
+			i--
+		default:
+			dst[k] = b[j-1]
+			j--
+		}
+	}
 }
